@@ -27,6 +27,8 @@ class FollowState:
     active: bool = False  # 音が鳴っていて追従中
     lost: bool = False  # 無音が続き、位置を保持している(次の音で楽譜全体から探し直す)
     in_rest: bool = False  # 現在位置が楽譜上の休符
+    uniqueness: float = 0.0  # 0..1。楽譜上の別の場所(2 拍以上離れた列)より現在位置がどれだけ良いか
+    candidates: int = 0  # 再探索中の候補(離れた場所)の数。1 なら一意
     frames: int = 0
 
     def to_dict(self) -> dict:
@@ -38,6 +40,8 @@ class FollowState:
             "active": self.active,
             "lost": self.lost,
             "in_rest": self.in_rest,
+            "uniqueness": round(self.uniqueness, 2),
+            "candidates": self.candidates,
         }
 
 
@@ -60,6 +64,9 @@ class OnlineFollower:
         jump_dwell_frames: int = 6,
         lost_after_sec: float = 1.0,
         lost_listen_sec: float = 1.0,
+        lost_max_listen_sec: float = 2.5,
+        distinct_beats: float = 2.0,
+        uniqueness_scale: float = 6.0,
         confidence_floor: float = 0.2,
         margin_scale: float = 4.0,
         restart_penalty: float = 15.0,
@@ -112,6 +119,9 @@ class OnlineFollower:
         self.jump_dwell_frames = jump_dwell_frames
         self.lost_after_sec = lost_after_sec
         self.lost_listen_sec = lost_listen_sec
+        self.lost_max_listen_sec = lost_max_listen_sec
+        self.distinct_beats = distinct_beats
+        self.uniqueness_scale = uniqueness_scale
         self.restart_penalty = restart_penalty
         self.confidence_floor = confidence_floor
         self.margin_scale = margin_scale
@@ -172,6 +182,22 @@ class OnlineFollower:
         on = max(fired, self._on_hold)
         self._on_hold = fired * 0.5
         return on
+
+    def _clusters(self, cols: np.ndarray) -> list[tuple[int, int]]:
+        """列の集合を、distinct_beats 以上離れたら別の場所とみなして分ける。"""
+        if len(cols) == 0:
+            return []
+        gap = int(self.distinct_beats / self.ref_step)
+        out = []
+        start = prev = int(cols[0])
+        for c in cols[1:]:
+            c = int(c)
+            if c - prev > gap:
+                out.append((start, prev))
+                start = c
+            prev = c
+        out.append((start, prev))
+        return out
 
     def _count_repeated(self, raw: float, predicted: float, now: float, tempo: float) -> float:
         """位置が同音連打の区間内で、直前のカウントから期待音価の 4 割以上経っていれば次の音符の頭へ。"""
@@ -253,12 +279,20 @@ class OnlineFollower:
                 j = int(near[np.argmin(np.abs(self.ref_beats[near] - predicted))])
                 if st.lost:
                     # 見失った後の音: 最初の 1 音だけでは同じ音高の列が楽譜中に多数同点で並ぶので、
-                    # lost_listen_sec(2〜3 音ぶん)聞いてから、楽譜全体の最小コスト列(同点なら直前の位置に近い列)を採る
+                    # lost_listen_sec 聞いてから楽譜全体の最小コスト列を採る。ただし候補が楽譜上の複数の
+                    # 離れた場所に同点で残っている間は決めない(誤った場所で伴奏を鳴らすより待つ)。
                     self._jump_frames += 1
-                    if self._jump_frames < int(self.lost_listen_sec * self.fps):
-                        return FollowState(**st.__dict__)
                     cand = np.nonzero(self.D <= gmin + self.near_eps)[0]
-                    j = int(cand[np.argmin(np.abs(self.ref_beats[cand] - st.position))])
+                    clusters = self._clusters(cand)
+                    st.candidates = len(clusters)
+                    listened = self._jump_frames / self.fps
+                    if listened < self.lost_listen_sec or (len(clusters) > 1 and listened < self.lost_max_listen_sec):
+                        return FollowState(**st.__dict__)
+                    if len(clusters) > 1:
+                        # 十分聞いても曖昧: 直前の位置に近い候補を採る(確信度は低いまま)
+                        j = int(cand[np.argmin(np.abs(self.ref_beats[cand] - st.position))])
+                    else:
+                        j = int(cand[len(cand) // 2])
                     self._jump_frames = 0
                 elif gmin + self.jump_margin < float(win.min()):
                     # 窓外に大幅に良い列がある。数フレーム続いて初めてジャンプ(1 フレームの揺れで飛ばない)
@@ -294,6 +328,10 @@ class OnlineFollower:
                 else:
                     st.position = predicted + self.gain * (raw - predicted)
                 st.raw_position = raw
+                # 一意性: 現在位置から distinct_beats 以上離れた列の最小コストとの差
+                far = np.abs(self.ref_beats - raw) >= self.distinct_beats
+                second = float(self.D[far].min()) if far.any() else self.uniqueness_scale
+                st.uniqueness = float(np.clip((second - float(self.D[j])) / self.uniqueness_scale, 0.0, 1.0))
                 if st.lost:
                     # 見失いからの復帰: 観測をそのまま位置にし、テンポは楽譜の値に戻す
                     st.position = raw

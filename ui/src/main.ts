@@ -18,6 +18,7 @@ interface State {
   follow?: {
     position: number; tempo: number; confidence: number; raw_position: number;
     active: boolean; lost: boolean; in_rest: boolean; enabled: boolean; mode: string;
+    uniqueness: number; candidates: number;
   };
 }
 
@@ -197,8 +198,12 @@ function tick(): void {
     const conf = enabled && f ? f.confidence : latest.confidence;
     draw(pos, conf);
     const measure = interpolate(cursorMap, pos)?.measure ?? 0;
-    const modeText = f?.mode === "waiting" ? (f.lost ? "待機中(音を待っています)" : "待機中") : f?.mode === "playing" ? "追従中" : "";
-    const followText = f && enabled ? `  ${modeText} ${f.position.toFixed(1)} (♩=${f.tempo.toFixed(0)}, ${Math.round(f.confidence * 100)}%)` : "";
+    let modeText = "";
+    if (f?.mode === "waiting") {
+      if (f.lost) modeText = f.candidates > 1 ? `聞いています(候補 ${f.candidates} 箇所)` : "待機中(音を待っています)";
+      else modeText = "位置を確認中";
+    } else if (f?.mode === "playing") modeText = "追従中";
+    const followText = f && enabled ? `  ${modeText} ${f.position.toFixed(1)} (♩=${f.tempo.toFixed(0)}, 確信 ${Math.round(f.confidence * 100)}% 一意 ${Math.round(f.uniqueness * 100)}%)` : "";
     infoEl.textContent = `拍 ${latest.position.toFixed(2)} / ${latest.length.toFixed(0)}  小節 ${measure}  ♩=${latest.tempo.toFixed(1)}  ${latest.playing ? "再生中" : "停止"}${followText}`;
   }
   requestAnimationFrame(tick);

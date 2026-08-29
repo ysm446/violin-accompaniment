@@ -76,7 +76,8 @@ class StateServer:
         self._last_seek_time = 0.0
         self._seek_count = 0
         self.follow_settings = {
-            "start_wait_sec": 0.5,  # 弾き始めてから伴奏を出すまでの待ち
+            "start_wait_sec": 1.0,  # 位置が確実になってから伴奏を出すまでの待ち(この間に位置が飛べばやり直し)
+            "uniqueness_min": 0.3,  # 楽譜上の他の場所より十分良いこと(誤った場所で鳴らさない)
             "seek_wait_sec": 0.6,  # ずれがこの時間続いたらシーク
             "seek_refractory_sec": 1.5,  # シーク後にシークしない時間
             "seek_threshold_beats": 1.0,
@@ -89,6 +90,7 @@ class StateServer:
         }
         self._silence_since: float | None = None
         self._rest_since: float | None = None
+        self._last_follow_pos = 0.0
         self.follow_mode = "off"  # off / waiting / playing
         self._setup_follower()
         if self.analysis is not None:
@@ -136,7 +138,13 @@ class StateServer:
         cfg = self.follow_settings
         fps = self.analysis.sr / self.analysis.hop if self.analysis else 94.0
         confident = st.active and st.confidence >= cfg["confidence_min"]
-        self._stable_frames = self._stable_frames + 1 if confident else 0
+        certain = confident and not st.lost and st.uniqueness >= cfg["uniqueness_min"]
+        # 安定判定: 確実で、かつ位置が直前の予測から 1 拍以上飛んでいないこと
+        if certain and abs(st.position - self._last_follow_pos) < 1.0 + abs(st.tempo) / 60.0 * 0.2:
+            self._stable_frames += 1
+        else:
+            self._stable_frames = 0
+        self._last_follow_pos = st.position
         now = time.perf_counter()
 
         # 無音の扱い: 休符でない無音が続いたら伴奏を止める(休符なら待つ)
@@ -178,15 +186,16 @@ class StateServer:
 
         error = st.position - p.position  # 拍。正なら伴奏が遅れている
         if abs(error) > cfg["seek_threshold_beats"]:
-            # ずれが続き、前回のシークから十分経っているときだけシーク
+            # ずれが続いたら、飛びつく(シーク)のではなく伴奏を止めて、確実になってから再開する
             self._disagree_frames += 1
-            if (self._disagree_frames >= cfg["seek_wait_sec"] * fps
-                    and now - self._last_seek_time >= cfg["seek_refractory_sec"]):
-                p.seek(st.position)
-                self._last_seek_time = now
-                self._seek_count += 1
+            if self._disagree_frames >= cfg["seek_wait_sec"] * fps:
+                p.stop()
+                p.set_rate(1.0)
                 self._follow_rate = 1.0
+                self._seek_count += 1
                 self._disagree_frames = 0
+                self._stable_frames = 0
+                self.follow_mode = "waiting"
             return
         self._disagree_frames = 0
         # 連続的なレート変調: テンポ比 + 位置誤差の比例項、変化率を制限(Phase 4 で先読みに置き換える)
