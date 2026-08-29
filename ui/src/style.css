@@ -1,0 +1,11 @@
+html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #fafafa; }
+body { display: flex; flex-direction: column; }
+#toolbar { display: flex; gap: 12px; align-items: center; padding: 8px 12px; background: #222; color: #eee; flex: 0 0 auto; }
+#toolbar button { padding: 4px 10px; }
+#toolbar label { display: flex; gap: 6px; align-items: center; }
+.status { padding: 2px 8px; border-radius: 4px; background: #a33; }
+.status.connected { background: #2a7; }
+#info { margin-left: auto; font-variant-numeric: tabular-nums; }
+#sheet-container { position: relative; flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; }
+#sheet { min-width: max-content; }
+#playhead { position: absolute; top: 0; width: 3px; height: 100%; background: rgba(220, 40, 40, 0.8); pointer-events: none; display: none; }

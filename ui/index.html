@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>violin-accompaniment</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header id="toolbar">
+      <button id="btn-play">▶ 再生</button>
+      <button id="btn-stop">■ 停止</button>
+      <button id="btn-reset">⏮ 最初から</button>
+      <label>レート <input id="rate" type="range" min="0.5" max="1.5" step="0.01" value="1" /> <span id="rate-value">1.00</span></label>
+      <span id="status" class="status">core 未接続</span>
+      <span id="info"></span>
+    </header>
+    <main id="sheet-container">
+      <div id="sheet"></div>
+      <div id="playhead"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

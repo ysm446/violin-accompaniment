@@ -1,0 +1,11 @@
+{
+  "name": "violin-accompaniment",
+  "version": "0.1.0",
+  "private": true,
+  "description": "バイオリン演奏に追従する自動伴奏アプリ",
+  "scripts": {
+    "core": "cd core && .venv/Scripts/python -m violin_core --midi ../muse-score/vivaldi_spring_first_movement_20251102.mid",
+    "ui": "npm --prefix ui run dev",
+    "build": "npm --prefix ui run build"
+  }
+}
