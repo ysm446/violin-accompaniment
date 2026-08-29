@@ -24,8 +24,16 @@
       <button id="btn-record">● 記録開始</button>
       <span id="record-info"></span>
     </section>
+    <section id="feedbackbar">
+      <label>振り返り <select id="session"></select></label>
+      <button id="btn-analyze">解析</button>
+      <button id="btn-clear-feedback">消す</button>
+      <span id="feedback-summary"></span>
+      <span id="feedback-legend"><i style="background:#2a7"></i>±15c <i style="background:#dc3"></i>±35c <i style="background:#d33"></i>それ以上 <i style="background:#39c"></i>早い <i style="background:#e83"></i>遅い</span>
+    </section>
     <main id="sheet-container">
       <div id="sheet"></div>
+      <div id="feedback-layer"></div>
       <div id="playhead"></div>
     </main>
     <script type="module" src="/src/main.ts"></script>

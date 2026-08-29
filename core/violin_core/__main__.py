@@ -103,7 +103,7 @@ def main() -> None:
             else:
                 print("[audio] 入力デバイスがありません")
 
-    server = StateServer(player, songs, current, exclude, analysis, devices, current_device, port=args.port)
+    server = StateServer(player, songs, current, exclude, analysis, devices, current_device, recordings_dir=args.recordings_dir, port=args.port)
     try:
         asyncio.run(server.run())
     except KeyboardInterrupt:

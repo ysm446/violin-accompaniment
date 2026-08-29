@@ -1,7 +1,7 @@
 # アーキテクチャ設計ガイド
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 07:30
+更新日時: 2026-08-30 09:30
 
 採用方針の根拠は [../reference/approach-comparison.md](../reference/approach-comparison.md) を参照。本書は実装時に守る構成と境界を定める。
 
@@ -43,7 +43,8 @@ core を後で C++ に置き換える場合も、この境界は変えない。
 | tempo | カルマンフィルタ。状態 (position, tempo)、観測ノイズは confidence で動的に変える | 瞬間変動をそのまま伴奏に流さない |
 | accomp | MIDI を拍クロックで再生(`player.py`)。音源は Phase 0 では Microsoft GS Wavetable Synth(python-rtmidi)、Phase 3 以降 FluidSynth | レート変調と先読みスケジューリング(下記) |
 | recorder | `recorder.py`: `recordings/<日時>/` に audio.wav・features.npz・states.jsonl・meta.json | `replay.py` で再処理。follower だけ差し替えて再評価できること |
-| score | `partitura` で MusicXML を解析 | `part-name` が `Violin` のパートを追従対象、他を伴奏とする。反復記号を含む楽譜は初期は弾く |
+| score | `score_notes.py`: score.mid の Violin トラックから音符列(拍・音高・長さ、反復展開済み)と参照 chroma 系列 | トラック名が `Violin` のものを追従対象、他を伴奏とする |
+| align | `align.py`: subsequence DTW(ステップ (1,0)/(1,1)/(1,2)、行ごとにベクトル化)、オンセット特徴、YIN f0、音符ごとの評価 → analysis.json | オフライン。Phase 3 のオンライン追従の正解データもここから作る |
 
 ### 3.1 伴奏の同期制御
 
@@ -69,7 +70,7 @@ rate     = clamp(slew_limit(rate_raw), 0.7, 1.4)
 - カーソルは音符単位の遷移ではなく、拍位置(連続値)から座標を計算して描く。実装は `ui/src/cursor.ts`: 読み込み時に OSMD の Cursor を末尾まで進めて (拍, x 座標, 小節番号) の表を作り、実行時はその表を線形補間する。OSMD のタイムスタンプは全音符 = 1.0 なので 4 倍して拍にする。反復で後ろへ飛ぶ区間は補間せず、飛ぶ瞬間まで留まる。
 - 横 1 段の連続スクロール。現在位置を画面の 1/3 に固定し、次の小節が常に見えるようにする。
 - confidence をカーソルの不透明度または色で表す。
-- セッション後は音符ごとの音程偏差(セント)・タイミング偏差(ms)を譜面に重ねる。
+- セッション後は音符ごとの音程偏差(セント)・タイミング偏差(ms)を譜面に重ねる(`ui/src/feedback.ts`、`#feedback-layer` に拍位置 → x 座標でマーカーを置く)。
 
 ## 5. 楽譜データの流れ
 

@@ -1,11 +1,11 @@
 # progress — 進捗と注意点
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 08:00
+更新日時: 2026-08-30 09:30
 
 ## 現在の状態
 
-Phase 1 完了(音声入力・特徴量・リプレイ基盤)。次は Phase 2(オフライン DTW + 演奏後フィードバック)。
+Phase 2 完了(オフライン DTW + 演奏後フィードバック)。次は Phase 3(オンライン追従 + 固定テンポ伴奏)。
 
 ## 完了済み
 
@@ -23,9 +23,13 @@ Phase 1 完了(音声入力・特徴量・リプレイ基盤)。次は Phase 2(�
 - 2026-08-30: **Phase 1 完了。** `core` に音声パイプラインを追加: `audio.py`(MicSource / WavSource、入力デバイス列挙)、`features.py`(numpy だけで chroma 12 次元・スペクトラルフラックス・レベル)、`analysis.py`(入力→hop ごとの特徴量、遅延計測、購読者)、`recorder.py`(`recordings/<日時>/` に audio.wav / features.npz / states.jsonl / meta.json)、`replay.py`(記録を再処理してオンラインと比較)。UI に入力デバイス選択・レベルメータ・chroma バー・遅延表示・記録ボタンを追加。
   - 検証: 合成音(A4 ビブラート付き / D5)で chroma の主成分と flux のオンセット位置(誤差 7 ms)を確認。1 ホップの計算 0.12 ms。実マイク(JVCKENWOOD USB Audio、WASAPI 48 kHz)で 2 秒 186 フレーム・取りこぼし 0・パイプライン遅延 22 ms。WAV → 記録 → オフライン再処理で特徴量が完全一致。
 
+- 2026-08-30: **Phase 2 完了。** `score_notes.py`(score.mid の Violin トラックから音符列と参照 chroma)、`align.py`(subsequence DTW、オンセット特徴、YIN による f0、音符ごとの発音時刻・タイミング偏差・音程偏差 → analysis.json)、`synth.py`(正解つき合成演奏の生成)。server に `sessions` / `analyze` コマンド。UI に「振り返り」バー(記録選択 → 解析 → 譜面上に音符ごとのマーカー: 色 = 音程偏差、バー = 早い/遅い、ホバーで詳細)。
+  - 検証(合成演奏、テンポ 65〜95 で変動、±15c のずれ、20 ms ジッタ、80 拍): 発音時刻の誤差 中央値 24 ms・p90 46 ms、誤検出 0、音程誤差 中央値 4 セント、タイミング偏差の偏り +3 ms。DTW は 5000 × 5000 で 0.8 秒。
+  - 実演奏(`20260830-042258`): 121 音を整列、|音程| 中央値 10.7 セント、|タイミング| 中央値 90 ms。
+
 ## 未完了
 
-- Phase 2: オフライン DTW + 演奏後フィードバック。詳細は [plan.md](plan.md)。
+- Phase 3: オンライン追従(matchmaker またはオンライン DTW 自作)+ 固定テンポ MIDI 伴奏。詳細は [plan.md](plan.md)。
 - 実演奏の記録を増やす(弾き直し・停止・明確なミスを含むもの、伴奏を鳴らしながらのもの)。
 
 ## 実演奏の記録(Phase 2 の材料)
@@ -50,6 +54,8 @@ Phase 1 完了(音声入力・特徴量・リプレイ基盤)。次は Phase 2(�
 - electron-builder は `npmRebuild: false` にする(OSMD が依存する Node ネイティブモジュール `gl` の再ビルドが失敗する。レンダラは Vite でバンドル済みなので不要)。`node_modules` はパッケージに含めない。
 - electron-builder の Electron 展開で `win-unpacked.tmp` → `win-unpacked` の rename が EPERM になる環境のため、`electronDist: node_modules/electron/dist` を指定してコピー方式にしている。
 - パッケージ版の楽譜は `resources/scores/<song_id>/`(score.mid / score.mxl / song.json のみ同梱)、core は `resources/core/violin_core.exe`。
+- DTW の既知の弱点: 同じ音高の長い音の連打(例: 拍 51.5〜53.5 の B5 ×3)では発音時刻が 1〜1.7 秒ずれることがある(chroma が同一でオンセットのピークが弱い)。オンセット特徴の重みは 1.0(`--onset-weight`)。無音判定はノイズ床 +12 dB と chroma ピーク ≥ 0.45 の両方で行う(ノイズだけのフレームは chroma が平坦で、楽譜のどこにでも半端に一致するため)。
+- 発音時刻は約 50 ms 遅れて検出される(窓長 4096 = 85 ms の影響)。相対的なタイミング偏差では相殺されるが、絶対時刻が必要な場面では補正する。
 - 入力の遅延計測: WASAPI では `inputBufferAdcTime` がコールバック時刻より未来の値を返して信用できないため、PortAudio の `stream.latency`(このデバイスで 22 ms)を引いて AD 時刻の近似としている。
 - chroma は ±60 セントのビブラートだと単フレームで隣の半音に主成分が移ることがある(平均では正しい)。DTW に入れる前に時間方向の平滑化か窓長の見直しを検討する。
 - 記録の保存先: 開発時はリポジトリの `recordings/`(gitignore 済み)、パッケージ版は `%APPDATA%/violin-accompaniment/recordings/`。

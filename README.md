@@ -49,6 +49,7 @@ npm run ui       # ブラウザ版(http://localhost:5173、core は別途起動�
 - VS Code のターミナルでは `ELECTRON_RUN_AS_NODE=1` が設定されていることがあり、Electron が素の Node として起動してしまう。`start.bat` はこれを解除している。手動のときは `set ELECTRON_RUN_AS_NODE=` を先に実行する。
 - WAV をマイク代わりに流す(リプレイ): `cd core && .venv\Scripts\python -m violin_core --scores-dir ..\scores --input-wav path	oudio.wav`
 - 記録の再処理: `cd core && .venv\Scripts\python -m violin_core.replay ..ecordings\<日時>`
+- 記録を楽譜と整列して音符ごとの評価を出す: `cd core && .venv\Scripts\python -m violin_core.align ..\recordings\<日時> --scores-dir ..\scores`(アプリの「振り返り」バーからも実行できる)
 - 入力デバイス一覧: `cd core && .venv\Scripts\python -m violin_core --list-inputs`
 - 別の MIDI 出力先を使う: `cd core && .venv/Scripts/python -m violin_core --list-ports` で確認し、`--midi-out "名前の一部"` を付ける。
 - 曲の追加: `scores/<曲id>/` に `score.mxl` と `score.mid`(と `song.json`)を置く。詳細は [scores/README.md](scores/README.md)。

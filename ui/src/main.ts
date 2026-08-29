@@ -1,6 +1,7 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { buildCursorMap, interpolate, type CursorPoint } from "./cursor";
 import { AudioPanel, type AudioStatus, type InputDevice } from "./audio_panel";
+import { FeedbackPanel, type Analysis, type SessionInfo } from "./feedback";
 
 const WS_URL = "ws://127.0.0.1:8765";
 const LAST_SONG_KEY = "violin-accompaniment:lastSong";
@@ -48,6 +49,7 @@ let loading: Promise<void> | null = null;
 let ws: WebSocket | null = null;
 let latest: State | null = null;
 const audioPanel = new AudioPanel(send);
+const feedback = new FeedbackPanel(send, () => displayedSong, (id) => selectSong(id), () => cursorMap);
 
 function showScore(song: Song): Promise<void> {
   if (displayedSong === song.id) return loading ?? Promise.resolve();
@@ -65,6 +67,7 @@ function showScore(song: Song): Promise<void> {
     container.scrollLeft = 0;
     draw(0);
     updateStatus();
+    feedback.redraw();
   })().catch((e) => {
     statusEl.textContent = `楽譜の読み込みに失敗: ${e}`;
     console.error(e);
@@ -135,6 +138,7 @@ function selectSong(id: string): void {
   const song = songs.find((s) => s.id === id);
   if (!song) return;
   rememberSong(id);
+  songSelect.value = id;
   send({ cmd: "load", song: id });
   showScore(song);
 }
@@ -162,6 +166,10 @@ function connect(): void {
       onSongs(msg.songs as Song[], msg.current ?? null);
     } else if (msg.type === "devices") {
       audioPanel.setDevices(msg.devices as InputDevice[], msg.current ?? null);
+    } else if (msg.type === "sessions") {
+      feedback.setSessions(msg.sessions as SessionInfo[]);
+    } else if (msg.type === "analysis") {
+      feedback.onAnalysis(msg as Analysis);
     }
   };
 }

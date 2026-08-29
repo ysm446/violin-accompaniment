@@ -15,17 +15,22 @@ ui → core:
   {"cmd": "load", "song": "<id>"}
   {"cmd": "input", "device": <id|null>}      入力デバイス切り替え(null で入力停止)
   {"cmd": "record", "on": true|false}        セッション記録の開始 / 停止
+  {"cmd": "sessions"}                        記録セッション一覧を要求 → {"type": "sessions", ...}
+  {"cmd": "analyze", "session": "<id>"}      記録を楽譜と整列 → {"type": "analysis", ...}(analysis.json の内容)
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
+from pathlib import Path
 
 import websockets
 from websockets.asyncio.server import ServerConnection, serve
 
+from .align import analyze_session
 from .analysis import AnalysisEngine
 from .audio import InputDevice, MicSource
 from .midi_score import load_midi
@@ -43,6 +48,7 @@ class StateServer:
         analysis: AnalysisEngine | None = None,
         devices: list[InputDevice] | None = None,
         current_device: int | None = None,
+        recordings_dir: Path | None = None,
         host: str = "127.0.0.1",
         port: int = 8765,
         hz: float = 30.0,
@@ -54,10 +60,79 @@ class StateServer:
         self.analysis = analysis
         self.devices = devices or []
         self.current_device = current_device
+        self._recordings_dir = recordings_dir
         self.host = host
         self.port = port
         self.interval = 1.0 / hz
         self._clients: set[ServerConnection] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    # ---- 記録セッション ----
+
+    @property
+    def recordings_dir(self) -> Path | None:
+        if self._recordings_dir is not None:
+            return self._recordings_dir
+        if self.analysis is None or self.analysis.recorder is None:
+            return None
+        return self.analysis.recorder.root
+
+    def sessions_message(self) -> dict:
+        items = []
+        root = self.recordings_dir
+        if root is not None and root.is_dir():
+            for d in sorted(root.iterdir(), reverse=True):
+                meta = d / "meta.json"
+                if not meta.exists():
+                    continue
+                try:
+                    m = json.loads(meta.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                items.append({
+                    "id": d.name,
+                    "song": m.get("song"),
+                    "started_at": m.get("started_at"),
+                    "duration_sec": round(float(m.get("duration_sec", 0.0)), 1),
+                    "analyzed": (d / "analysis.json").exists(),
+                })
+        return {"type": "sessions", "sessions": items}
+
+    def _analyze_async(self, session_id: str) -> None:
+        root = self.recordings_dir
+        if root is None:
+            return
+        session = root / session_id
+        if not (session / "meta.json").exists():
+            self._post({"type": "analysis", "error": f"セッションが見つかりません: {session_id}"})
+            return
+
+        def work() -> None:
+            try:
+                meta = json.loads((session / "meta.json").read_text(encoding="utf-8"))
+                song = self.songs.get(meta.get("song") or "")
+                if song is None:
+                    raise ValueError(f"曲 {meta.get('song')} が見つかりません")
+                result = analyze_session(session, song.midi)
+                (session / "analysis.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+                self._post({"type": "analysis", **result})
+                self._post(self.sessions_message())
+            except Exception as e:  # noqa: BLE001
+                print(f"[core] analyze error: {e}")
+                self._post({"type": "analysis", "error": str(e), "session": session_id})
+
+        self._post({"type": "analysis", "session": session_id, "status": "running"})
+        threading.Thread(target=work, name="analyze", daemon=True).start()
+
+    def _post(self, msg: dict) -> None:
+        """他スレッドから全クライアントへ送る。"""
+        if self._loop is None:
+            return
+        data = json.dumps(msg, ensure_ascii=False)
+        asyncio.run_coroutine_threadsafe(self._broadcast(data), self._loop)
+
+    async def _broadcast(self, data: str) -> None:
+        await asyncio.gather(*(self._safe_send(c, data) for c in list(self._clients)))
 
     def state(self) -> dict:
         p = self.player
@@ -87,13 +162,16 @@ class StateServer:
         try:
             await ws.send(json.dumps(self.songs_message()))
             await ws.send(json.dumps(self.devices_message()))
+            await ws.send(json.dumps(self.sessions_message(), ensure_ascii=False))
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
                 try:
-                    self._handle_command(msg)
+                    reply = self._handle_command(msg)
+                    if reply is not None:
+                        await ws.send(json.dumps(reply, ensure_ascii=False))
                 except Exception as e:  # noqa: BLE001
                     print(f"[core] command error {msg}: {e}")
         except websockets.ConnectionClosed:
@@ -101,7 +179,7 @@ class StateServer:
         finally:
             self._clients.discard(ws)
 
-    def _handle_command(self, msg: dict) -> None:
+    def _handle_command(self, msg: dict) -> dict | None:
         cmd = msg.get("cmd")
         p = self.player
         if cmd == "play":
@@ -121,6 +199,12 @@ class StateServer:
             self.set_input(msg.get("device"))
         elif cmd == "record":
             self.set_recording(bool(msg.get("on", False)))
+            return self.sessions_message() if not msg.get("on") else None
+        elif cmd == "sessions":
+            return self.sessions_message()
+        elif cmd == "analyze":
+            self._analyze_async(str(msg.get("session", "")))
+        return None
 
     def load_song(self, song_id: str) -> None:
         song = self.songs.get(song_id)
@@ -181,6 +265,7 @@ class StateServer:
             self._clients.discard(ws)
 
     async def run(self) -> None:
+        self._loop = asyncio.get_running_loop()
         async with serve(self._handler, self.host, self.port):
             print(f"[core] ws://{self.host}:{self.port} で待機中")
             await self._broadcast_loop()

@@ -1,7 +1,7 @@
 # plan — 実装方針と優先順位
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 07:30
+更新日時: 2026-08-30 09:30
 
 ## 実装方針
 
@@ -35,7 +35,7 @@ Phase 3 で「一応合奏になる」。Phase 4〜5 が音楽的な仕上がり
 | --- | --- | --- |
 | 音声入出力 | sounddevice | — |
 | 特徴量 | numpy 自作(STFT + chroma フィルタバンク、`features.py`) | librosa(CQT) |
-| 楽譜解析 | partitura | music21 |
+| 楽譜解析 | score.mid の Violin トラック(`score_notes.py`)。MusicXML の構造解析が必要になったら partitura | partitura / music21 |
 | 追従 | matchmaker | 自作 Online DTW |
 | MIDI 音源 | Phase 0: Microsoft GS Wavetable Synth(python-rtmidi)。Phase 3 以降: FluidSynth(pyfluidsynth) | sfizz |
 | 譜面描画 | OpenSheetMusicDisplay | Verovio |
@@ -44,15 +44,14 @@ Phase 3 で「一応合奏になる」。Phase 4〜5 が音楽的な仕上がり
 
 ライセンスは同梱形態が決まった時点で個別に確認する。
 
-## 直近の作業(Phase 2)
+## 直近の作業(Phase 3)
 
-1. 実演奏を数曲ぶん記録する(`recordings/`)。弾き直し・停止・明確なミスを含むものも用意する。
-2. 楽譜(MusicXML)から参照 chroma 系列を合成する(`partitura` で音符列を取り、拍ごとに chroma を作る)。
-3. 記録の chroma 系列と参照系列をオフライン DTW で整列し、音符ごとの対応(拍 ↔ 時刻)を得る。
-4. 対応結果から音程偏差(f0 をここで初めて使う)とタイミング偏差を計算し、UI の譜面に重ねて表示する。
-5. DTW の結果を `replay.py` で数値評価できるようにする(正解アライメントは目視修正で作る)。
+1. オンライン追従器を `analysis.py` の購読者として実装する。まず自作のオンライン DTW(`align.py` のコスト関数を流用、前方窓つき)で始め、`matchmaker` は比較対象として試す。
+2. 追従器の出力 `{position, tempo, confidence}` を server の state に流し、UI のカーソルを伴奏ではなく追従結果で動かすモードを作る。
+3. `synth.py` の合成演奏と実演奏の記録を `--input-wav` で流し、`align.py` のオフライン整列を正解として位置誤差を測る(中央値 < 50 ms、p95 < 150 ms が目標)。
+4. 固定テンポの MIDI 伴奏を追従位置に同期させる(まずはシークのみ、レート変調は Phase 4)。
 
-Phase 0〜1 の成果物は [progress.md](progress.md) と [../../README.md](../../README.md) を参照。
+Phase 0〜2 の成果物は [progress.md](progress.md) と [../../README.md](../../README.md) を参照。
 
 ## 未決事項
 
