@@ -25,6 +25,8 @@ class FollowState:
     confidence: float = 0.0
     raw_position: float = 0.0  # DTW の生の推定
     active: bool = False  # 音が鳴っていて追従中
+    lost: bool = False  # 無音が続き、位置を保持している(次の音で楽譜全体から探し直す)
+    in_rest: bool = False  # 現在位置が楽譜上の休符
     frames: int = 0
 
     def to_dict(self) -> dict:
@@ -34,6 +36,8 @@ class FollowState:
             "confidence": round(self.confidence, 2),
             "raw_position": round(self.raw_position, 3),
             "active": self.active,
+            "lost": self.lost,
+            "in_rest": self.in_rest,
         }
 
 
@@ -54,6 +58,8 @@ class OnlineFollower:
         near_eps: float = 0.05,
         jump_margin: float = 6.0,
         jump_dwell_frames: int = 6,
+        lost_after_sec: float = 1.0,
+        lost_listen_sec: float = 1.0,
         confidence_floor: float = 0.2,
         margin_scale: float = 4.0,
         restart_penalty: float = 15.0,
@@ -104,6 +110,8 @@ class OnlineFollower:
         self.near_eps = near_eps
         self.jump_margin = jump_margin
         self.jump_dwell_frames = jump_dwell_frames
+        self.lost_after_sec = lost_after_sec
+        self.lost_listen_sec = lost_listen_sec
         self.restart_penalty = restart_penalty
         self.confidence_floor = confidence_floor
         self.margin_scale = margin_scale
@@ -132,6 +140,7 @@ class OnlineFollower:
             self._on_hold = 0.0
             self._last_count_time: float | None = None
             self._jump_frames = 0
+            self._silence_start: float | None = None
             self._last_fired = 0.0
             self._active_frames = 0
             self._floor_db = -90.0  # ノイズ床の推定(速く下がり、ゆっくり上がる)
@@ -242,7 +251,16 @@ class OnlineFollower:
                 gmin = float(self.D.min())
                 near = np.nonzero(win <= win.min() + self.near_eps)[0] + lo
                 j = int(near[np.argmin(np.abs(self.ref_beats[near] - predicted))])
-                if gmin + self.jump_margin < float(win.min()):
+                if st.lost:
+                    # 見失った後の音: 最初の 1 音だけでは同じ音高の列が楽譜中に多数同点で並ぶので、
+                    # lost_listen_sec(2〜3 音ぶん)聞いてから、楽譜全体の最小コスト列(同点なら直前の位置に近い列)を採る
+                    self._jump_frames += 1
+                    if self._jump_frames < int(self.lost_listen_sec * self.fps):
+                        return FollowState(**st.__dict__)
+                    cand = np.nonzero(self.D <= gmin + self.near_eps)[0]
+                    j = int(cand[np.argmin(np.abs(self.ref_beats[cand] - st.position))])
+                    self._jump_frames = 0
+                elif gmin + self.jump_margin < float(win.min()):
                     # 窓外に大幅に良い列がある。数フレーム続いて初めてジャンプ(1 フレームの揺れで飛ばない)
                     self._jump_frames += 1
                     if self._jump_frames >= self.jump_dwell_frames:
@@ -276,13 +294,32 @@ class OnlineFollower:
                 else:
                     st.position = predicted + self.gain * (raw - predicted)
                 st.raw_position = raw
+                if st.lost:
+                    # 見失いからの復帰: 観測をそのまま位置にし、テンポは楽譜の値に戻す
+                    st.position = raw
+                    st.tempo = self.score_bpm
+                    self._history = [(now, raw)]
+                    st.lost = False
+                self._silence_start = None
+                st.in_rest = False
                 # 確信度 = 直近の一致度 × 「選んだ列が全体最小からどれだけ離れているか」
                 margin = float(self.D[j])  # D は min が 0 になるよう正規化済み
                 st.confidence = float(np.clip((1.0 - self._match_ema) * np.exp(-margin / self.margin_scale), 0.0, 1.0))
                 st.active = True
             else:
-                # 無音: 直前のテンポで外挿し、確信度を下げていく
-                st.position = min(predicted, self.length_beats)
+                # 無音: 楽譜上の休符なら直前のテンポで外挿。休符でない無音が lost_after_sec 続いたら
+                # 「見失った」として位置を保持し、次の音で楽譜全体から探し直す
+                if self._silence_start is None:
+                    self._silence_start = now
+                jp = min(int(round(predicted / self.ref_step)), len(self.ref) - 1)
+                st.in_rest = bool(self.ref_sil[jp])
+                silence = now - self._silence_start
+                if st.lost:
+                    pass  # 位置を保持
+                elif st.in_rest or silence < self.lost_after_sec:
+                    st.position = min(predicted, self.length_beats)
+                else:
+                    st.lost = True
                 st.confidence = max(self.confidence_floor, st.confidence * 0.97)
                 st.active = False
             st.frames += 1

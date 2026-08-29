@@ -15,7 +15,10 @@ interface State {
   length: number;
   song: string | null;
   audio?: AudioStatus;
-  follow?: { position: number; tempo: number; confidence: number; raw_position: number; active: boolean; enabled: boolean };
+  follow?: {
+    position: number; tempo: number; confidence: number; raw_position: number;
+    active: boolean; lost: boolean; in_rest: boolean; enabled: boolean; mode: string;
+  };
 }
 
 /** core が送る曲情報。xml は scores/ からの相対パス(例: "vivaldi_spring_1/score.mxl") */
@@ -194,7 +197,8 @@ function tick(): void {
     const conf = enabled && f ? f.confidence : latest.confidence;
     draw(pos, conf);
     const measure = interpolate(cursorMap, pos)?.measure ?? 0;
-    const followText = f ? `  追従 ${f.position.toFixed(1)} (♩=${f.tempo.toFixed(0)}, ${Math.round(f.confidence * 100)}%)` : "";
+    const modeText = f?.mode === "waiting" ? (f.lost ? "待機中(音を待っています)" : "待機中") : f?.mode === "playing" ? "追従中" : "";
+    const followText = f && enabled ? `  ${modeText} ${f.position.toFixed(1)} (♩=${f.tempo.toFixed(0)}, ${Math.round(f.confidence * 100)}%)` : "";
     infoEl.textContent = `拍 ${latest.position.toFixed(2)} / ${latest.length.toFixed(0)}  小節 ${measure}  ♩=${latest.tempo.toFixed(1)}  ${latest.playing ? "再生中" : "停止"}${followText}`;
   }
   requestAnimationFrame(tick);

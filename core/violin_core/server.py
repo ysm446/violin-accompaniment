@@ -84,7 +84,12 @@ class StateServer:
             "rate_gain": 0.15,
             "rate_min": 0.8,
             "rate_max": 1.25,
+            "silence_stop_sec": 1.0,  # 休符でない無音がこの時間続いたら伴奏を止める
+            "rest_grace_sec": 1.0,  # 休符中は休符の長さ + この時間まで待つ
         }
+        self._silence_since: float | None = None
+        self._rest_since: float | None = None
+        self.follow_mode = "off"  # off / waiting / playing
         self._setup_follower()
         if self.analysis is not None:
             self.analysis.listeners.append(self._on_frame)
@@ -105,6 +110,20 @@ class StateServer:
         fps = self.analysis.sr / self.analysis.hop
         self.follower = OnlineFollower(notes, self.player.score.score_bpm, fps)
 
+    def _rest_remaining_sec(self, position: float, p: MidiPlayer) -> float:
+        """追従対象パートの現在の休符が終わるまでの秒数(楽譜テンポ換算)。休符でなければ 0。"""
+        f = self.follower
+        if f is None:
+            return 0.0
+        j = min(int(round(position / f.ref_step)), len(f.ref) - 1)
+        if not f.ref_sil[j]:
+            return 0.0
+        k = j
+        while k < len(f.ref) and f.ref_sil[k]:
+            k += 1
+        beats = (k - j) * f.ref_step
+        return beats * 60.0 / max(p.score.score_bpm, 1e-6)
+
     def _on_frame(self, frame, adc_time: float) -> None:
         """analysis スレッドから hop ごとに呼ばれる。追従器を進め、追従モードなら伴奏を同期する。"""
         f = self.follower
@@ -120,14 +139,35 @@ class StateServer:
         self._stable_frames = self._stable_frames + 1 if confident else 0
         now = time.perf_counter()
 
+        # 無音の扱い: 休符でない無音が続いたら伴奏を止める(休符なら待つ)
+        if st.active:
+            self._silence_since = None
+        else:
+            if self._silence_since is None:
+                self._silence_since = now
+            silence = now - self._silence_since
+            if p.playing:
+                limit = cfg["silence_stop_sec"]
+                if st.in_rest:
+                    limit = self._rest_remaining_sec(st.position, p) + cfg["rest_grace_sec"]
+                if silence >= limit or st.lost:
+                    p.stop()
+                    self._follow_rate = 1.0
+                    p.set_rate(1.0)
+                    self.follow_mode = "waiting"
+            return
+
         if not p.playing:
+            self.follow_mode = "waiting"
             # 弾き始めてしばらく安定してから伴奏を出す
             if self._stable_frames >= cfg["start_wait_sec"] * fps:
                 p.seek(st.position)
                 p.play()
                 self._last_seek_time = now
                 self._follow_rate = 1.0
+                self.follow_mode = "playing"
             return
+        self.follow_mode = "playing"
 
         if not confident:
             # 確信がないときは飛びつかず、レートを 1.0 に戻していく
@@ -238,7 +278,8 @@ class StateServer:
         if self.analysis is not None:
             st["audio"] = self.analysis.status.to_dict()
         if self.follower is not None:
-            st["follow"] = {**self.follower.current.to_dict(), "enabled": self.follow_enabled, "seeks": self._seek_count}
+            st["follow"] = {**self.follower.current.to_dict(), "enabled": self.follow_enabled, "seeks": self._seek_count,
+                            "mode": self.follow_mode if self.follow_enabled else "off"}
         return st
 
     def songs_message(self) -> dict:
@@ -296,6 +337,8 @@ class StateServer:
             self.follow_enabled = bool(msg.get("on", False))
             self._stable_frames = 0
             self._disagree_frames = 0
+            self._silence_since = None
+            self.follow_mode = "waiting" if self.follow_enabled else "off"
             if not self.follow_enabled:
                 p.set_rate(1.0)
                 self._follow_rate = 1.0
