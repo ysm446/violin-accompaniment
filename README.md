@@ -5,7 +5,7 @@
 ## 構成
 
 ```
-core/         Python: 音声処理・追従・MIDI 伴奏(現在は固定テンポ再生 + 位置配信)
+core/         Python: 音声入力・特徴量抽出・記録・MIDI 伴奏(追従は未実装、固定テンポ再生)
 ui/           Electron + Vite + TypeScript + OpenSheetMusicDisplay: 譜面表示とカーソル
 scores/       楽譜。曲ごとに 1 フォルダ(score.mscz / score.mxl / score.mid / song.json)。詳細は scores/README.md
 docs/         設計・計画・進捗
@@ -21,6 +21,8 @@ core と ui は別プロセスで、WebSocket(`ws://127.0.0.1:8765`)で `{positi
 - `violin-accompaniment Setup 0.1.0.exe` — インストーラ版
 
 起動すると譜面が表示され、「再生」で伴奏(Windows 標準音源)が鳴りカーソルが進む。譜面クリックでシーク。曲はツールバーのプルダウンで切り替える(前回の曲を記憶)。
+
+2 段目のバーが音声入力: 入力デバイスを選ぶとレベルメータと chroma(C〜B の 12 本)が動く。「記録開始」でセッション(音声・特徴量・再生位置)を `%APPDATA%iolin-accompanimentecordings\<日時>\` に保存する(開発時はリポジトリの `recordings/`)。
 
 ## 開発環境のセットアップ(初回)
 
@@ -45,6 +47,9 @@ npm run ui       # ブラウザ版(http://localhost:5173、core は別途起動�
 ```
 
 - VS Code のターミナルでは `ELECTRON_RUN_AS_NODE=1` が設定されていることがあり、Electron が素の Node として起動してしまう。`start.bat` はこれを解除している。手動のときは `set ELECTRON_RUN_AS_NODE=` を先に実行する。
+- WAV をマイク代わりに流す(リプレイ): `cd core && .venv\Scripts\python -m violin_core --scores-dir ..\scores --input-wav path	oudio.wav`
+- 記録の再処理: `cd core && .venv\Scripts\python -m violin_core.replay ..ecordings\<日時>`
+- 入力デバイス一覧: `cd core && .venv\Scripts\python -m violin_core --list-inputs`
 - 別の MIDI 出力先を使う: `cd core && .venv/Scripts/python -m violin_core --list-ports` で確認し、`--midi-out "名前の一部"` を付ける。
 - 曲の追加: `scores/<曲id>/` に `score.mxl` と `score.mid`(と `song.json`)を置く。詳細は [scores/README.md](scores/README.md)。
 

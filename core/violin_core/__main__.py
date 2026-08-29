@@ -1,6 +1,7 @@
 """使い方:
   core/.venv/Scripts/python -m violin_core --scores-dir ../scores
-  core/.venv/Scripts/python -m violin_core --midi ../scores/<id>/score.mid   (単一曲)
+  core/.venv/Scripts/python -m violin_core --scores-dir ../scores --input-wav path/to/audio.wav   (リプレイ)
+  core/.venv/Scripts/python -m violin_core --list-ports / --list-inputs
 """
 
 from __future__ import annotations
@@ -9,21 +10,33 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from .analysis import AnalysisEngine
+from .audio import MicSource, WavSource, default_input_device, list_input_devices
 from .midi_score import MidiScore, load_midi
 from .player import MidiPlayer
+from .recorder import SessionRecorder
 from .server import StateServer
 from .songs import Song, scan_songs
 
+SR = 48000
+N_FFT = 4096
+HOP = 512
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="violin_core: MIDI 伴奏再生 + 位置配信")
-    parser.add_argument("--scores-dir", type=Path, default=None, help="楽譜フォルダ(.mxl と .mid の組を曲として列挙)")
+    parser = argparse.ArgumentParser(description="violin_core: 音声解析 + MIDI 伴奏再生 + 位置配信")
+    parser.add_argument("--scores-dir", type=Path, default=None, help="楽譜フォルダ(scores/<id>/ を曲として列挙)")
     parser.add_argument("--midi", type=Path, default=None, help="単一の伴奏 MIDI ファイル(--scores-dir の代わり)")
     parser.add_argument("--song", default=None, help="起動時に読み込む曲 id(省略時は一覧の先頭)")
     parser.add_argument("--port", type=int, default=8765, help="WebSocket ポート")
     parser.add_argument("--midi-out", default=None, help="MIDI 出力ポート名(部分一致)。省略時は先頭")
     parser.add_argument("--exclude", default="Violin", help="鳴らさないトラック名(前方一致、カンマ区切り)")
+    parser.add_argument("--input-device", type=int, default=None, help="入力デバイス番号(--list-inputs で確認)。省略時は WASAPI 既定")
+    parser.add_argument("--input-wav", type=Path, default=None, help="マイクの代わりに WAV を実時間で流す(リプレイ)")
+    parser.add_argument("--no-audio", action="store_true", help="音声入力を使わない")
+    parser.add_argument("--recordings-dir", type=Path, default=Path("../recordings"), help="セッション記録の保存先")
     parser.add_argument("--list-ports", action="store_true", help="MIDI 出力ポートを表示して終了")
+    parser.add_argument("--list-inputs", action="store_true", help="音声入力デバイスを表示して終了")
     args = parser.parse_args()
 
     if args.list_ports:
@@ -31,6 +44,12 @@ def main() -> None:
 
         for i, name in enumerate(rtmidi.MidiOut().get_ports()):
             print(f"{i}: {name}")
+        return
+    if args.list_inputs:
+        default = default_input_device()
+        for d in list_input_devices():
+            mark = "*" if d.id == default else " "
+            print(f"{mark} {d.id:3d}: {d.name}  [{d.hostapi}] {d.default_samplerate:.0f} Hz")
         return
 
     exclude = tuple(s.strip() for s in args.exclude.split(",") if s.strip())
@@ -55,16 +74,43 @@ def main() -> None:
         print(f"[core] {song.midi.name}: tracks={score.track_names} play={score.played_tracks} "
               f"events={len(score.events)} length={score.length_beats:.1f} beats bpm={score.score_bpm:.1f}")
     else:
-        print("[core] 曲が見つかりません(.mxl と .mid の組が必要)")
+        print("[core] 曲が見つかりません(score.mxl と score.mid の組が必要)")
 
     player = MidiPlayer(score, port_name=args.midi_out)
     print(f"[core] MIDI out: {player.port_name}")
-    server = StateServer(player, songs, current, exclude, port=args.port)
+
+    analysis: AnalysisEngine | None = None
+    devices = []
+    current_device: int | None = None
+    if not args.no_audio:
+        recorder = SessionRecorder(args.recordings_dir, SR)
+        analysis = AnalysisEngine(sr=SR, n_fft=N_FFT, hop=HOP, recorder=recorder)
+        analysis.start()
+        try:
+            devices = list_input_devices()
+        except Exception as e:  # noqa: BLE001
+            print(f"[audio] デバイス列挙に失敗: {e}")
+        if args.input_wav is not None:
+            analysis.set_source(WavSource(args.input_wav, sr=SR, blocksize=HOP, realtime=True, loop=True))
+        else:
+            dev = args.input_device if args.input_device is not None else default_input_device()
+            if dev is not None:
+                try:
+                    analysis.set_source(MicSource(dev, sr=SR, blocksize=HOP))
+                    current_device = dev
+                except Exception as e:  # noqa: BLE001
+                    print(f"[audio] 入力デバイス {dev} を開けません: {e}")
+            else:
+                print("[audio] 入力デバイスがありません")
+
+    server = StateServer(player, songs, current, exclude, analysis, devices, current_device, port=args.port)
     try:
         asyncio.run(server.run())
     except KeyboardInterrupt:
         pass
     finally:
+        if analysis is not None:
+            analysis.close()
         player.close()
 
 

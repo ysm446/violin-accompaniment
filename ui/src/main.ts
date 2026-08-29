@@ -1,5 +1,6 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { buildCursorMap, interpolate, type CursorPoint } from "./cursor";
+import { AudioPanel, type AudioStatus, type InputDevice } from "./audio_panel";
 
 const WS_URL = "ws://127.0.0.1:8765";
 const LAST_SONG_KEY = "violin-accompaniment:lastSong";
@@ -12,6 +13,7 @@ interface State {
   rate: number;
   length: number;
   song: string | null;
+  audio?: AudioStatus;
 }
 
 /** core が送る曲情報。xml は scores/ からの相対パス(例: "vivaldi_spring_1/score.mxl") */
@@ -45,6 +47,7 @@ let displayedSong: string | null = null; // 現在描画している曲 id
 let loading: Promise<void> | null = null;
 let ws: WebSocket | null = null;
 let latest: State | null = null;
+const audioPanel = new AudioPanel(send);
 
 function showScore(song: Song): Promise<void> {
   if (displayedSong === song.id) return loading ?? Promise.resolve();
@@ -157,11 +160,14 @@ function connect(): void {
       }
     } else if (msg.type === "songs") {
       onSongs(msg.songs as Song[], msg.current ?? null);
+    } else if (msg.type === "devices") {
+      audioPanel.setDevices(msg.devices as InputDevice[], msg.current ?? null);
     }
   };
 }
 
 function tick(): void {
+  if (latest) audioPanel.update(latest.audio);
   if (latest && cursorMap.length > 0) {
     draw(latest.position, latest.confidence);
     const measure = interpolate(cursorMap, latest.position)?.measure ?? 0;

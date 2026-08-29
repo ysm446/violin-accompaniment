@@ -8,3 +8,4 @@ core/dist/
 core/*.spec
 ui/release/
 *_test.log
+recordings/

@@ -1,7 +1,7 @@
 # plan — 実装方針と優先順位
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 06:30
+更新日時: 2026-08-30 07:30
 
 ## 実装方針
 
@@ -34,7 +34,7 @@ Phase 3 で「一応合奏になる」。Phase 4〜5 が音楽的な仕上がり
 | 用途 | 採用 | 代替 |
 | --- | --- | --- |
 | 音声入出力 | sounddevice | — |
-| 特徴量 | librosa(CQT / chroma) | 自作 |
+| 特徴量 | numpy 自作(STFT + chroma フィルタバンク、`features.py`) | librosa(CQT) |
 | 楽譜解析 | partitura | music21 |
 | 追従 | matchmaker | 自作 Online DTW |
 | MIDI 音源 | Phase 0: Microsoft GS Wavetable Synth(python-rtmidi)。Phase 3 以降: FluidSynth(pyfluidsynth) | sfizz |
@@ -44,14 +44,15 @@ Phase 3 で「一応合奏になる」。Phase 4〜5 が音楽的な仕上がり
 
 ライセンスは同梱形態が決まった時点で個別に確認する。
 
-## 直近の作業(Phase 1)
+## 直近の作業(Phase 2)
 
-1. `core` に `sounddevice` で 48 kHz mono 入力を追加し、ブロック単位で chroma(CQT)+ spectral flux を計算する。
-2. 生音声(WAV)・特徴量・3 値をセッション単位で記録する `recorder` を作り、録音ファイルからも同じパイプラインを回せるようにする(リプレイ基盤)。
-3. UI に入力レベルと chroma の簡易表示を足し、マイク / ライン入力が拾えていることを確認できるようにする。
-4. 発音 → 特徴量更新までの遅延を実測する。
+1. 実演奏を数曲ぶん記録する(`recordings/`)。弾き直し・停止・明確なミスを含むものも用意する。
+2. 楽譜(MusicXML)から参照 chroma 系列を合成する(`partitura` で音符列を取り、拍ごとに chroma を作る)。
+3. 記録の chroma 系列と参照系列をオフライン DTW で整列し、音符ごとの対応(拍 ↔ 時刻)を得る。
+4. 対応結果から音程偏差(f0 をここで初めて使う)とタイミング偏差を計算し、UI の譜面に重ねて表示する。
+5. DTW の結果を `replay.py` で数値評価できるようにする(正解アライメントは目視修正で作る)。
 
-Phase 0 の成果物は [progress.md](progress.md) と [../../README.md](../../README.md) を参照。
+Phase 0〜1 の成果物は [progress.md](progress.md) と [../../README.md](../../README.md) を参照。
 
 ## 未決事項
 

@@ -22,12 +22,14 @@ function resolveCoreLaunch() {
   if (app.isPackaged) {
     const exe = path.join(process.resourcesPath, "core", "violin_core.exe");
     const scores = path.join(process.resourcesPath, "scores");
-    return { cmd: exe, args: ["--scores-dir", scores, "--port", String(CORE_PORT)], cwd: path.dirname(exe) };
+    const recordings = path.join(app.getPath("userData"), "recordings");
+    return { cmd: exe, args: ["--scores-dir", scores, "--recordings-dir", recordings, "--port", String(CORE_PORT)], cwd: path.dirname(exe) };
   }
   const root = repoRoot();
   const python = path.join(root, "core", ".venv", "Scripts", "python.exe");
   const scores = path.join(root, "scores");
-  return { cmd: python, args: ["-m", "violin_core", "--scores-dir", scores, "--port", String(CORE_PORT)], cwd: path.join(root, "core") };
+  const recordings = path.join(root, "recordings");
+  return { cmd: python, args: ["-m", "violin_core", "--scores-dir", scores, "--recordings-dir", recordings, "--port", String(CORE_PORT)], cwd: path.join(root, "core") };
 }
 
 function startCore() {

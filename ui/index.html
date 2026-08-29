@@ -16,6 +16,14 @@
       <span id="status" class="status">core 未接続</span>
       <span id="info"></span>
     </header>
+    <section id="audiobar">
+      <label>入力 <select id="input"></select></label>
+      <div id="meter" title="入力レベル"><div id="meter-fill"></div><span id="meter-db">-∞ dB</span></div>
+      <canvas id="chroma" width="264" height="40" title="chroma(C〜B)"></canvas>
+      <span id="audio-info"></span>
+      <button id="btn-record">● 記録開始</button>
+      <span id="record-info"></span>
+    </section>
     <main id="sheet-container">
       <div id="sheet"></div>
       <div id="playhead"></div>

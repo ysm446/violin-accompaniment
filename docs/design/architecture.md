@@ -1,7 +1,7 @@
 # アーキテクチャ設計ガイド
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 06:30
+更新日時: 2026-08-30 07:30
 
 採用方針の根拠は [../reference/approach-comparison.md](../reference/approach-comparison.md) を参照。本書は実装時に守る構成と境界を定める。
 
@@ -17,7 +17,7 @@
 
 - follower の内部実装(DTW / HMM)を下流に漏らさない。
 - 音符 ID は返さない。UI は拍位置から描画座標を計算する。
-- 実装(Phase 0): core は接続時に `{"type":"songs", songs, current}` を 1 回、その後約 30 Hz で `{"type":"state", position, tempo, confidence, playing, rate, length, song, time}` を送る。UI → core は `{"cmd": "play"|"stop"|"reset"|"seek"|"rate"|"load", ...}`。詳細は `core/violin_core/server.py` の docstring。
+- 実装: core は接続時に `{"type":"songs", ...}` と `{"type":"devices", ...}` を 1 回ずつ、その後約 30 Hz で `{"type":"state", position, tempo, confidence, playing, rate, length, song, time, audio: {level_db, chroma, flux, latency_ms, ...}}` を送る。UI → core は `{"cmd": "play"|"stop"|"reset"|"seek"|"rate"|"load"|"input"|"record", ...}`。詳細は `core/violin_core/server.py` の docstring。
 
 ## 2. プロセス構成
 
@@ -36,12 +36,13 @@ core を後で C++ に置き換える場合も、この境界は変えない。
 
 | モジュール | 初期実装 | 備考 |
 | --- | --- | --- |
-| audio-io | `sounddevice`、48 kHz mono、ブロック 512 samples | ピエゾ / マイク向けの HPF・EQ を設定で差し込めるようにする |
-| feature | CQT ベース chroma(12 次元、L2 正規化)+ spectral flux | ホップ 512 samples(≒ 10.7 ms)。f0 は演奏後フィードバック用に別途 |
+| audio-io | `audio.py`: `sounddevice` の MicSource(48 kHz mono、ブロック 512)と、リプレイ用の WavSource(同じインターフェース) | ピエゾ / マイク向けの HPF・EQ を設定で差し込めるようにする(未実装) |
+| feature | `features.py`: STFT(n_fft 4096)+ chroma フィルタバンク(12 次元、L2 正規化)+ spectral flux + レベル。numpy のみ | ホップ 512 samples(≒ 10.7 ms)。f0 は演奏後フィードバック用に別途 |
+| analysis | `analysis.py`: 入力ブロック → hop ごとに特徴量、遅延計測、購読者(follower)への配信 | 入力スレッドは queue に積むだけ。マイクは溢れたら捨てる、WAV はブロックして落とさない |
 | follower | `matchmaker`(Online DTW)。精度が頭打ちなら HMM へ | 参照系列は楽譜から合成した chroma。confidence は累積コストから導出 |
 | tempo | カルマンフィルタ。状態 (position, tempo)、観測ノイズは confidence で動的に変える | 瞬間変動をそのまま伴奏に流さない |
 | accomp | MIDI を拍クロックで再生(`player.py`)。音源は Phase 0 では Microsoft GS Wavetable Synth(python-rtmidi)、Phase 3 以降 FluidSynth | レート変調と先読みスケジューリング(下記) |
-| recorder | 生音声・特徴量・3 値・楽譜・パラメータを記録 | リプレイで follower だけ差し替えて再評価できること |
+| recorder | `recorder.py`: `recordings/<日時>/` に audio.wav・features.npz・states.jsonl・meta.json | `replay.py` で再処理。follower だけ差し替えて再評価できること |
 | score | `partitura` で MusicXML を解析 | `part-name` が `Violin` のパートを追従対象、他を伴奏とする。反復記号を含む楽譜は初期は弾く |
 
 ### 3.1 伴奏の同期制御

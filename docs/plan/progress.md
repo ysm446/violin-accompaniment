@@ -1,11 +1,11 @@
 # progress — 進捗と注意点
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 06:30
+更新日時: 2026-08-30 07:30
 
 ## 現在の状態
 
-Phase 0 完了。Electron のスタンドアローンアプリ(exe)として配布できる状態。
+Phase 1 完了(音声入力・特徴量・リプレイ基盤)。次は Phase 2(オフライン DTW + 演奏後フィードバック)。
 
 ## 完了済み
 
@@ -20,9 +20,13 @@ Phase 0 完了。Electron のスタンドアローンアプリ(exe)として配�
 
 - 2026-08-30: **曲選択 UI と楽譜フォルダの再編。** `muse-score/` を `scores/<song_id>/`(score.mscz / score.mxl / score.mid / song.json)に変更。core が `--scores-dir` でフォルダを走査し、接続時に曲一覧を送る。UI はプルダウンで切り替え(`{"cmd":"load"}`)、前回の曲を localStorage に記憶。カーソル表の拍を `CurrentEnrolledTimestamp`(反復展開後)にしたので、反復記号のある曲(ノクターン)も MIDI と揃う。
 
+- 2026-08-30: **Phase 1 完了。** `core` に音声パイプラインを追加: `audio.py`(MicSource / WavSource、入力デバイス列挙)、`features.py`(numpy だけで chroma 12 次元・スペクトラルフラックス・レベル)、`analysis.py`(入力→hop ごとの特徴量、遅延計測、購読者)、`recorder.py`(`recordings/<日時>/` に audio.wav / features.npz / states.jsonl / meta.json)、`replay.py`(記録を再処理してオンラインと比較)。UI に入力デバイス選択・レベルメータ・chroma バー・遅延表示・記録ボタンを追加。
+  - 検証: 合成音(A4 ビブラート付き / D5)で chroma の主成分と flux のオンセット位置(誤差 7 ms)を確認。1 ホップの計算 0.12 ms。実マイク(JVCKENWOOD USB Audio、WASAPI 48 kHz)で 2 秒 186 フレーム・取りこぼし 0・パイプライン遅延 22 ms。WAV → 記録 → オフライン再処理で特徴量が完全一致。
+
 ## 未完了
 
-- Phase 1: 音声入力(sounddevice)+ chroma 抽出 + 可視化、記録(リプレイ)基盤。詳細は [plan.md](plan.md)。
+- Phase 2: オフライン DTW + 演奏後フィードバック。詳細は [plan.md](plan.md)。
+- 実際のバイオリン演奏を記録し、chroma の見え方(ビブラート・ピエゾ/マイクの音色)を確認する。まだ合成音でしか検証していない。
 
 ## 注意点
 
@@ -42,6 +46,9 @@ Phase 0 完了。Electron のスタンドアローンアプリ(exe)として配�
 - electron-builder は `npmRebuild: false` にする(OSMD が依存する Node ネイティブモジュール `gl` の再ビルドが失敗する。レンダラは Vite でバンドル済みなので不要)。`node_modules` はパッケージに含めない。
 - electron-builder の Electron 展開で `win-unpacked.tmp` → `win-unpacked` の rename が EPERM になる環境のため、`electronDist: node_modules/electron/dist` を指定してコピー方式にしている。
 - パッケージ版の楽譜は `resources/scores/<song_id>/`(score.mid / score.mxl / song.json のみ同梱)、core は `resources/core/violin_core.exe`。
+- 入力の遅延計測: WASAPI では `inputBufferAdcTime` がコールバック時刻より未来の値を返して信用できないため、PortAudio の `stream.latency`(このデバイスで 22 ms)を引いて AD 時刻の近似としている。
+- chroma は ±60 セントのビブラートだと単フレームで隣の半音に主成分が移ることがある(平均では正しい)。DTW に入れる前に時間方向の平滑化か窓長の見直しを検討する。
+- 記録の保存先: 開発時はリポジトリの `recordings/`(gitignore 済み)、パッケージ版は `%APPDATA%/violin-accompaniment/recordings/`。
 - `start.bat` は ASCII のみで書く(日本語を入れると cmd.exe が UTF-8 を誤解釈して行が壊れる)。メッセージは英語。
 - ポート 5173 は他プロジェクトが使っていることがある。`ui/vite.config.ts` は 5173 固定なので、衝突時は `npx vite --port 5199` などで起動する。
 - 追従器は最初から自作しない。`matchmaker` の動作確認を Phase 3 の入口にする。
