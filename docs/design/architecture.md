@@ -1,7 +1,7 @@
 # アーキテクチャ設計ガイド
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 09:30
+更新日時: 2026-08-30 12:00
 
 採用方針の根拠は [../reference/approach-comparison.md](../reference/approach-comparison.md) を参照。本書は実装時に守る構成と境界を定める。
 
@@ -39,8 +39,8 @@ core を後で C++ に置き換える場合も、この境界は変えない。
 | audio-io | `audio.py`: `sounddevice` の MicSource(48 kHz mono、ブロック 512)と、リプレイ用の WavSource(同じインターフェース) | ピエゾ / マイク向けの HPF・EQ を設定で差し込めるようにする(未実装) |
 | feature | `features.py`: STFT(n_fft 4096)+ chroma フィルタバンク(12 次元、L2 正規化)+ spectral flux + レベル。numpy のみ | ホップ 512 samples(≒ 10.7 ms)。f0 は演奏後フィードバック用に別途 |
 | analysis | `analysis.py`: 入力ブロック → hop ごとに特徴量、遅延計測、購読者(follower)への配信 | 入力スレッドは queue に積むだけ。マイクは溢れたら捨てる、WAV はブロックして落とさない |
-| follower | `matchmaker`(Online DTW)。精度が頭打ちなら HMM へ | 参照系列は楽譜から合成した chroma。confidence は累積コストから導出 |
-| tempo | カルマンフィルタ。状態 (position, tempo)、観測ノイズは confidence で動的に変える | 瞬間変動をそのまま伴奏に流さない |
+| follower | `follower.py`: align.py の DTW 行再帰をフレームごとに進めるオンライン DTW。窓内の近似最小列から観測、再スタート項で弾き直し対応、オンセット項、同音連打の音符カウント | 参照系列は楽譜から合成した chroma。confidence = 直近の一致度 × 累積コストの margin |
+| tempo | 現状: 直近 3 秒の観測位置の回帰を EMA(follower 内)。Phase 4 でカルマンフィルタに置き換える | 瞬間変動をそのまま伴奏に流さない |
 | accomp | MIDI を拍クロックで再生(`player.py`)。音源は Phase 0 では Microsoft GS Wavetable Synth(python-rtmidi)、Phase 3 以降 FluidSynth | レート変調と先読みスケジューリング(下記) |
 | recorder | `recorder.py`: `recordings/<日時>/` に audio.wav・features.npz・states.jsonl・meta.json | `replay.py` で再処理。follower だけ差し替えて再評価できること |
 | score | `score_notes.py`: score.mid の Violin トラックから音符列(拍・音高・長さ、反復展開済み)と参照 chroma 系列 | トラック名が `Violin` のものを追従対象、他を伴奏とする |
@@ -59,6 +59,8 @@ rate     = clamp(slew_limit(rate_raw), 0.7, 1.4)
 - `Kp` は位置誤差を 10〜20 拍かけて吸収する程度に緩くする。
 - `slew_limit` は必須(レート変化率を制限しないと可聴なワウが出る)。
 - クランプ範囲外を要求されたら不連続シークへ切り替える(`allNotesOff()` → 短いリリース → `seek()`)。
+
+実装(Phase 3、`server._on_frame`): 誤差 |error| > 1 拍ならシーク、以内なら `rate = clip(tempo_est/tempo_score + 0.3*error, 0.7, 1.4)` を 1 フレームあたり ±0.02 の変化率制限つきで適用。先読みは未実装。
 
 先読みスケジューリング: 検出レイテンシがある以上、反応型では必ず遅れる。伴奏イベントは推定位置とテンポから 100〜200 ms 先を予測してスケジュールする。
 

@@ -37,10 +37,12 @@ def render_performance(
     rng = np.random.default_rng(seed)
     # 拍 → 秒(テンポ曲線を積分)
     step = 1 / 32
+    first = min(n.beat for n in notes) if notes else 0.0
     length = max(n.beat + n.duration for n in notes)
     if max_beats is not None:
         length = min(length, max_beats)
-    grid = np.arange(0, length + step, step)
+    # 最初の音符の拍を時刻 lead_silence に置く(途中からの演奏を合成できるように)
+    grid = np.arange(first, length + step, step)
     sec = np.concatenate([[0.0], np.cumsum([60.0 / bpm_curve(b) * step for b in grid[:-1]])])
 
     def beat_to_sec(b: float) -> float:

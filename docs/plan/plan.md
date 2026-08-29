@@ -1,7 +1,7 @@
 # plan — 実装方針と優先順位
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 09:30
+更新日時: 2026-08-30 12:00
 
 ## 実装方針
 
@@ -36,7 +36,7 @@ Phase 3 で「一応合奏になる」。Phase 4〜5 が音楽的な仕上がり
 | 音声入出力 | sounddevice | — |
 | 特徴量 | numpy 自作(STFT + chroma フィルタバンク、`features.py`) | librosa(CQT) |
 | 楽譜解析 | score.mid の Violin トラック(`score_notes.py`)。MusicXML の構造解析が必要になったら partitura | partitura / music21 |
-| 追従 | matchmaker | 自作 Online DTW |
+| 追従 | 自作オンライン DTW(`follower.py`、align.py の行再帰をフレームごとに進める) | matchmaker(比較対象として未評価) |
 | MIDI 音源 | Phase 0: Microsoft GS Wavetable Synth(python-rtmidi)。Phase 3 以降: FluidSynth(pyfluidsynth) | sfizz |
 | 譜面描画 | OpenSheetMusicDisplay | Verovio |
 | UI 基盤 | Electron + Vite + TypeScript(electron-builder で exe 配布) | — |
@@ -44,14 +44,14 @@ Phase 3 で「一応合奏になる」。Phase 4〜5 が音楽的な仕上がり
 
 ライセンスは同梱形態が決まった時点で個別に確認する。
 
-## 直近の作業(Phase 3)
+## 直近の作業(Phase 4 / 5)
 
-1. オンライン追従器を `analysis.py` の購読者として実装する。まず自作のオンライン DTW(`align.py` のコスト関数を流用、前方窓つき)で始め、`matchmaker` は比較対象として試す。
-2. 追従器の出力 `{position, tempo, confidence}` を server の state に流し、UI のカーソルを伴奏ではなく追従結果で動かすモードを作る。
-3. `synth.py` の合成演奏と実演奏の記録を `--input-wav` で流し、`align.py` のオフライン整列を正解として位置誤差を測る(中央値 < 50 ms、p95 < 150 ms が目標)。
-4. 固定テンポの MIDI 伴奏を追従位置に同期させる(まずはシークのみ、レート変調は Phase 4)。
+1. 実演奏で追従モードを試し、遅延・追従感・誤ジャンプの頻度を記録する(`recordings/` に残す)。
+2. 同音連打の耐性(Phase 5 の主題): オンセット項なし + 音符カウントの構成で弾き直しの再アンカーを成立させる(再アンカー判定にオンセット系列の一致を使う等)。目標: 合成テンポ変動で p95 < 300 ms、弾き直し再アンカー < 1 s の両立。
+3. テンポ推定をカルマンフィルタにし、観測ゲインの循環(観測が予測に引きずられる)を解消する。
+4. 伴奏の先読みスケジューリング(推定位置 + テンポで 100〜200 ms 先を予約)とクロスフェード付きシーク。
 
-Phase 0〜2 の成果物は [progress.md](progress.md) と [../../README.md](../../README.md) を参照。
+Phase 0〜3 の成果物は [progress.md](progress.md) と [../../README.md](../../README.md) を参照。
 
 ## 未決事項
 

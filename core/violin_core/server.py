@@ -8,7 +8,8 @@ core → ui:
     {"type": "state", "position": 12.5, "tempo": 70.0, "confidence": 1.0,
      "playing": true, "rate": 1.0, "length": 332.0, "song": "<id>", "time": <unix秒>,
      "audio": {"source", "level_db", "chroma": [12], "flux", "latency_ms", "frames", "overruns",
-               "recording", "recording_dir"}}
+               "recording", "recording_dir"},
+     "follow": {"position", "tempo", "confidence", "raw_position", "active", "enabled"}}
 ui → core:
   {"cmd": "play"} / {"cmd": "stop"} / {"cmd": "reset"}
   {"cmd": "seek", "beat": 32.0} / {"cmd": "rate", "value": 0.9}
@@ -16,6 +17,8 @@ ui → core:
   {"cmd": "input", "device": <id|null>}      入力デバイス切り替え(null で入力停止)
   {"cmd": "record", "on": true|false}        セッション記録の開始 / 停止
   {"cmd": "sessions"}                        記録セッション一覧を要求 → {"type": "sessions", ...}
+  {"cmd": "follow", "on": true|false}        追従モード: 追従器の位置に伴奏を同期する
+  {"cmd": "follow_reset"}                    追従器を先頭に戻す
   {"cmd": "analyze", "session": "<id>"}      記録を楽譜と整列 → {"type": "analysis", ...}(analysis.json の内容)
 """
 
@@ -27,11 +30,14 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import websockets
 from websockets.asyncio.server import ServerConnection, serve
 
 from .align import analyze_session
 from .analysis import AnalysisEngine
+from .follower import OnlineFollower
+from .score_notes import load_part_notes
 from .audio import InputDevice, MicSource
 from .midi_score import load_midi
 from .player import MidiPlayer
@@ -61,11 +67,54 @@ class StateServer:
         self.devices = devices or []
         self.current_device = current_device
         self._recordings_dir = recordings_dir
+        self.follower: OnlineFollower | None = None
+        self.follow_enabled = False
+        self._follow_rate = 1.0
+        self._setup_follower()
+        if self.analysis is not None:
+            self.analysis.listeners.append(self._on_frame)
         self.host = host
         self.port = port
         self.interval = 1.0 / hz
         self._clients: set[ServerConnection] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    # ---- 追従 ----
+
+    def _setup_follower(self) -> None:
+        song = self.songs.get(self.current or "")
+        if song is None or self.analysis is None:
+            self.follower = None
+            return
+        notes = load_part_notes(song.midi)
+        fps = self.analysis.sr / self.analysis.hop
+        self.follower = OnlineFollower(notes, self.player.score.score_bpm, fps)
+
+    def _on_frame(self, frame, adc_time: float) -> None:
+        """analysis スレッドから hop ごとに呼ばれる。追従器を進め、追従モードなら伴奏を同期する。"""
+        f = self.follower
+        if f is None:
+            return
+        st = f.process(frame.chroma, frame.flux, frame.level_db, t=adc_time)
+        if not self.follow_enabled:
+            return
+        p = self.player
+        if not st.active or st.confidence < 0.3:
+            return
+        if not p.playing:
+            p.seek(st.position)
+            p.play()
+            return
+        error = st.position - p.position  # 拍。正なら伴奏が遅れている
+        if abs(error) > 1.0:
+            p.seek(st.position)
+            self._follow_rate = 1.0
+            return
+        # 連続的なレート変調: テンポ比 + 位置誤差の比例項、変化率を制限(Phase 4 で先読みに置き換える)
+        target = st.tempo / max(p.score.score_bpm, 1e-6) + 0.3 * error
+        target = float(np.clip(target, 0.7, 1.4))
+        self._follow_rate += float(np.clip(target - self._follow_rate, -0.02, 0.02))
+        p.set_rate(self._follow_rate)
 
     # ---- 記録セッション ----
 
@@ -149,6 +198,8 @@ class StateServer:
         }
         if self.analysis is not None:
             st["audio"] = self.analysis.status.to_dict()
+        if self.follower is not None:
+            st["follow"] = {**self.follower.current.to_dict(), "enabled": self.follow_enabled}
         return st
 
     def songs_message(self) -> dict:
@@ -202,6 +253,16 @@ class StateServer:
             return self.sessions_message() if not msg.get("on") else None
         elif cmd == "sessions":
             return self.sessions_message()
+        elif cmd == "follow":
+            self.follow_enabled = bool(msg.get("on", False))
+            if not self.follow_enabled:
+                p.set_rate(1.0)
+                self._follow_rate = 1.0
+        elif cmd == "follow_reset":
+            if self.follower is not None:
+                self.follower.reset()
+            p.stop()
+            p.seek(0.0)
         elif cmd == "analyze":
             self._analyze_async(str(msg.get("session", "")))
         return None
@@ -218,6 +279,7 @@ class StateServer:
         score = load_midi(song.midi, exclude_tracks=self.exclude_tracks)
         self.player.load(score)
         self.current = song_id
+        self._setup_follower()
         print(f"[core] load: {song.midi.name} events={len(score.events)} length={score.length_beats:.1f} beats")
 
     def set_input(self, device) -> None:

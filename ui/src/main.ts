@@ -15,6 +15,7 @@ interface State {
   length: number;
   song: string | null;
   audio?: AudioStatus;
+  follow?: { position: number; tempo: number; confidence: number; raw_position: number; active: boolean; enabled: boolean };
 }
 
 /** core が送る曲情報。xml は scores/ からの相対パス(例: "vivaldi_spring_1/score.mxl") */
@@ -174,19 +175,36 @@ function connect(): void {
   };
 }
 
+const followBtn = $<HTMLButtonElement>("btn-follow");
+let followOn = false;
+
 function tick(): void {
   if (latest) audioPanel.update(latest.audio);
   if (latest && cursorMap.length > 0) {
-    draw(latest.position, latest.confidence);
-    const measure = interpolate(cursorMap, latest.position)?.measure ?? 0;
-    infoEl.textContent = `拍 ${latest.position.toFixed(2)} / ${latest.length.toFixed(0)}  小節 ${measure}  ♩=${latest.tempo.toFixed(1)}  ${latest.playing ? "再生中" : "停止"}`;
+    const f = latest.follow;
+    const enabled = !!f?.enabled;
+    if (enabled !== followOn) {
+      followOn = enabled;
+      followBtn.textContent = enabled ? "◎ 追従 ON" : "◎ 追従 OFF";
+      followBtn.classList.toggle("on", enabled);
+      playhead.classList.toggle("follow", enabled);
+    }
+    // 追従モードでは追従器の位置でカーソルを動かす(確信度は不透明度に)
+    const pos = enabled && f ? f.position : latest.position;
+    const conf = enabled && f ? f.confidence : latest.confidence;
+    draw(pos, conf);
+    const measure = interpolate(cursorMap, pos)?.measure ?? 0;
+    const followText = f ? `  追従 ${f.position.toFixed(1)} (♩=${f.tempo.toFixed(0)}, ${Math.round(f.confidence * 100)}%)` : "";
+    infoEl.textContent = `拍 ${latest.position.toFixed(2)} / ${latest.length.toFixed(0)}  小節 ${measure}  ♩=${latest.tempo.toFixed(1)}  ${latest.playing ? "再生中" : "停止"}${followText}`;
   }
   requestAnimationFrame(tick);
 }
 
+followBtn.onclick = () => send({ cmd: "follow", on: !followOn });
+
 $("btn-play").onclick = () => send({ cmd: "play" });
 $("btn-stop").onclick = () => send({ cmd: "stop" });
-$("btn-reset").onclick = () => send({ cmd: "reset" });
+$("btn-reset").onclick = () => send({ cmd: followOn ? "follow_reset" : "reset" });
 songSelect.onchange = () => selectSong(songSelect.value);
 rateInput.oninput = () => {
   const v = parseFloat(rateInput.value);
