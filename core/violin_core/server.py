@@ -70,6 +70,21 @@ class StateServer:
         self.follower: OnlineFollower | None = None
         self.follow_enabled = False
         self._follow_rate = 1.0
+        # 保守的な同期のための状態(フレーム数は約 94 fps 基準)
+        self._stable_frames = 0  # 確信度の高い有音フレームが連続した数(開始待ち)
+        self._disagree_frames = 0  # 追従位置と再生位置が大きくずれたフレームの連続数
+        self._last_seek_time = 0.0
+        self._seek_count = 0
+        self.follow_settings = {
+            "start_wait_sec": 0.5,  # 弾き始めてから伴奏を出すまでの待ち
+            "seek_wait_sec": 0.6,  # ずれがこの時間続いたらシーク
+            "seek_refractory_sec": 1.5,  # シーク後にシークしない時間
+            "seek_threshold_beats": 1.0,
+            "confidence_min": 0.5,
+            "rate_gain": 0.15,
+            "rate_min": 0.8,
+            "rate_max": 1.25,
+        }
         self._setup_follower()
         if self.analysis is not None:
             self.analysis.listeners.append(self._on_frame)
@@ -99,21 +114,45 @@ class StateServer:
         if not self.follow_enabled:
             return
         p = self.player
-        if not st.active or st.confidence < 0.3:
-            return
+        cfg = self.follow_settings
+        fps = self.analysis.sr / self.analysis.hop if self.analysis else 94.0
+        confident = st.active and st.confidence >= cfg["confidence_min"]
+        self._stable_frames = self._stable_frames + 1 if confident else 0
+        now = time.perf_counter()
+
         if not p.playing:
-            p.seek(st.position)
-            p.play()
+            # 弾き始めてしばらく安定してから伴奏を出す
+            if self._stable_frames >= cfg["start_wait_sec"] * fps:
+                p.seek(st.position)
+                p.play()
+                self._last_seek_time = now
+                self._follow_rate = 1.0
             return
+
+        if not confident:
+            # 確信がないときは飛びつかず、レートを 1.0 に戻していく
+            self._disagree_frames = 0
+            self._follow_rate += float(np.clip(1.0 - self._follow_rate, -0.01, 0.01))
+            p.set_rate(self._follow_rate)
+            return
+
         error = st.position - p.position  # 拍。正なら伴奏が遅れている
-        if abs(error) > 1.0:
-            p.seek(st.position)
-            self._follow_rate = 1.0
+        if abs(error) > cfg["seek_threshold_beats"]:
+            # ずれが続き、前回のシークから十分経っているときだけシーク
+            self._disagree_frames += 1
+            if (self._disagree_frames >= cfg["seek_wait_sec"] * fps
+                    and now - self._last_seek_time >= cfg["seek_refractory_sec"]):
+                p.seek(st.position)
+                self._last_seek_time = now
+                self._seek_count += 1
+                self._follow_rate = 1.0
+                self._disagree_frames = 0
             return
+        self._disagree_frames = 0
         # 連続的なレート変調: テンポ比 + 位置誤差の比例項、変化率を制限(Phase 4 で先読みに置き換える)
-        target = st.tempo / max(p.score.score_bpm, 1e-6) + 0.3 * error
-        target = float(np.clip(target, 0.7, 1.4))
-        self._follow_rate += float(np.clip(target - self._follow_rate, -0.02, 0.02))
+        target = st.tempo / max(p.score.score_bpm, 1e-6) + cfg["rate_gain"] * error
+        target = float(np.clip(target, cfg["rate_min"], cfg["rate_max"]))
+        self._follow_rate += float(np.clip(target - self._follow_rate, -0.01, 0.01))
         p.set_rate(self._follow_rate)
 
     # ---- 記録セッション ----
@@ -199,7 +238,7 @@ class StateServer:
         if self.analysis is not None:
             st["audio"] = self.analysis.status.to_dict()
         if self.follower is not None:
-            st["follow"] = {**self.follower.current.to_dict(), "enabled": self.follow_enabled}
+            st["follow"] = {**self.follower.current.to_dict(), "enabled": self.follow_enabled, "seeks": self._seek_count}
         return st
 
     def songs_message(self) -> dict:
@@ -255,6 +294,8 @@ class StateServer:
             return self.sessions_message()
         elif cmd == "follow":
             self.follow_enabled = bool(msg.get("on", False))
+            self._stable_frames = 0
+            self._disagree_frames = 0
             if not self.follow_enabled:
                 p.set_rate(1.0)
                 self._follow_rate = 1.0

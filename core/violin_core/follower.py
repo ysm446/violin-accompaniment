@@ -53,6 +53,7 @@ class OnlineFollower:
         window_fwd: float = 3.0,
         near_eps: float = 0.05,
         jump_margin: float = 6.0,
+        jump_dwell_frames: int = 6,
         confidence_floor: float = 0.2,
         margin_scale: float = 4.0,
         restart_penalty: float = 15.0,
@@ -102,6 +103,7 @@ class OnlineFollower:
         self.window_fwd = window_fwd
         self.near_eps = near_eps
         self.jump_margin = jump_margin
+        self.jump_dwell_frames = jump_dwell_frames
         self.restart_penalty = restart_penalty
         self.confidence_floor = confidence_floor
         self.margin_scale = margin_scale
@@ -129,6 +131,7 @@ class OnlineFollower:
             self._refractory = 0
             self._on_hold = 0.0
             self._last_count_time: float | None = None
+            self._jump_frames = 0
             self._last_fired = 0.0
             self._active_frames = 0
             self._floor_db = -90.0  # ノイズ床の推定(速く下がり、ゆっくり上がる)
@@ -237,11 +240,16 @@ class OnlineFollower:
                     lo, hi = 0, len(self.D)
                 win = self.D[lo:hi]
                 gmin = float(self.D.min())
+                near = np.nonzero(win <= win.min() + self.near_eps)[0] + lo
+                j = int(near[np.argmin(np.abs(self.ref_beats[near] - predicted))])
                 if gmin + self.jump_margin < float(win.min()):
-                    j = int(np.argmin(self.D))
+                    # 窓外に大幅に良い列がある。数フレーム続いて初めてジャンプ(1 フレームの揺れで飛ばない)
+                    self._jump_frames += 1
+                    if self._jump_frames >= self.jump_dwell_frames:
+                        j = int(np.argmin(self.D))
+                        self._jump_frames = 0
                 else:
-                    near = np.nonzero(win <= win.min() + self.near_eps)[0] + lo
-                    j = int(near[np.argmin(np.abs(self.ref_beats[near] - predicted))])
+                    self._jump_frames = 0
                 raw = float(self.ref_beats[j])
                 # 同音連打の中なら、オンセットの発火で次の音符の頭へ進める
                 if fired_now and self._run_next:
