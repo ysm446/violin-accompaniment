@@ -1,7 +1,7 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { buildCursorMap, interpolate, type CursorPoint } from "./cursor";
 
-const SCORE_URL = "/vivaldi_spring_first_movement_20251102.mxl";
+const SCORE_URL = "./vivaldi_spring_first_movement_20251102.mxl";
 const WS_URL = "ws://127.0.0.1:8765";
 
 interface State {

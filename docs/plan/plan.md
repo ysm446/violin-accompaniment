@@ -1,7 +1,7 @@
 # plan — 実装方針と優先順位
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 04:10
+更新日時: 2026-08-30 05:40
 
 ## 実装方針
 
@@ -39,7 +39,7 @@ Phase 3 で「一応合奏になる」。Phase 4〜5 が音楽的な仕上がり
 | 追従 | matchmaker | 自作 Online DTW |
 | MIDI 音源 | Phase 0: Microsoft GS Wavetable Synth(python-rtmidi)。Phase 3 以降: FluidSynth(pyfluidsynth) | sfizz |
 | 譜面描画 | OpenSheetMusicDisplay | Verovio |
-| UI 基盤 | Vite + TypeScript(まずブラウザ、必要なら Electron) | PySide + QWebEngine |
+| UI 基盤 | Electron + Vite + TypeScript(electron-builder で exe 配布) | — |
 | 通信 | WebSocket(JSON) | — |
 
 ライセンスは同梱形態が決まった時点で個別に確認する。
@@ -58,4 +58,4 @@ Phase 0 の成果物は [progress.md](progress.md) と [../../README.md](../../R
 - Python core を C++ に移植する判断基準(Phase 3 の精度が出た時点で決める)。
 - 反復記号の展開に対応する時期。
 - 伴奏音源(SF2 / SFZ)の配布方法とライセンス。
-- UI をブラウザのままにするか Electron に包むか(Phase 0 の使い勝手で決める)。
+- 曲の選択 UI(現在は `SCORE_MIDI` / `SCORE_URL` の固定指定)。

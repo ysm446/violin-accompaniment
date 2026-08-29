@@ -1,7 +1,7 @@
 # アーキテクチャ設計ガイド
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 04:10
+更新日時: 2026-08-30 05:40
 
 採用方針の根拠は [../reference/approach-comparison.md](../reference/approach-comparison.md) を参照。本書は実装時に守る構成と境界を定める。
 
@@ -24,11 +24,13 @@
 | プロセス | 技術(初期) | 役割 |
 | --- | --- | --- |
 | core | Python | 音声入力、特徴量、追従、テンポ推定、MIDI 伴奏、記録 |
-| ui | Web(ブラウザ、必要なら Electron) | 譜面表示、カーソル、操作、セッション分析 |
+| ui | Electron(レンダラは Vite + TypeScript) | 譜面表示、カーソル、操作、セッション分析。メインプロセスが core を子プロセスとして起動・停止 |
 
 通信は WebSocket(localhost)。core → ui は 3 値を約 30 Hz で配信、ui → core は制御コマンド(load / start / stop / seek / 設定)。音声データは通さない。
 
 core を後で C++ に置き換える場合も、この境界は変えない。
+
+配布形態: core は PyInstaller(onedir)で exe 化し、electron-builder の `extraResources` で `resources/core/` に同梱する。楽譜は `resources/scores/`。開発時は Electron が `core/.venv` の python を直接起動する(`ui/electron/main.cjs` の `resolveCoreLaunch`)。
 
 ## 3. core のモジュール
 

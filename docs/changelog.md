@@ -1,9 +1,15 @@
 # Changelog
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 04:30
+更新日時: 2026-08-30 05:40
 
 ## 未リリース
+
+### 2026-08-30 05:40 — Electron 化・スタンドアローン exe
+
+- `ui/electron/main.cjs` を追加。Electron が core を自動起動・停止する。
+- core を PyInstaller で `violin_core.exe` 化(`npm run build:core`)、electron-builder で portable exe / インストーラを生成(`npm run dist`)。
+- `start.bat` を Electron 開発起動用に変更。README を更新。
 
 ### 2026-08-30 04:10 — Phase 0
 

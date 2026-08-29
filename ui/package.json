@@ -6,13 +6,63 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "app": "npm run build && electron .",
+    "app:dev": "electron .",
+    "preview": "vite preview",
+    "dist": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "opensheetmusicdisplay": "^2.1.2"
   },
   "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
+  },
+  "main": "electron/main.cjs",
+  "description": "バイオリン演奏に追従する自動伴奏アプリ",
+  "author": "ysm446",
+  "build": {
+    "appId": "com.ysm446.violin-accompaniment",
+    "productName": "violin-accompaniment",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json",
+      "!node_modules/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../core/dist/violin_core",
+        "to": "core"
+      },
+      {
+        "from": "../muse-score",
+        "to": "scores",
+        "filter": [
+          "*.mid",
+          "*.mxl"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
+    },
+    "npmRebuild": false,
+    "electronDist": "node_modules/electron/dist"
   }
 }
