@@ -79,6 +79,15 @@ class MidiPlayer:
             self._next_event = self._first_event_at_or_after(beat)
         self.all_notes_off()
 
+    def load(self, score: MidiScore) -> None:
+        """曲を差し替える。停止して先頭に戻る。"""
+        with self._lock:
+            self._playing = False
+            self.score = score
+            self._position = 0.0
+            self._next_event = 0
+        self.all_notes_off()
+
     def set_rate(self, rate: float) -> None:
         with self._lock:
             self._rate = max(0.1, min(rate, 4.0))

@@ -7,7 +7,6 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 
-const SCORE_MIDI = "vivaldi_spring_first_movement_20251102.mid";
 const CORE_PORT = 8765;
 
 let coreProcess = null;
@@ -22,13 +21,13 @@ function repoRoot() {
 function resolveCoreLaunch() {
   if (app.isPackaged) {
     const exe = path.join(process.resourcesPath, "core", "violin_core.exe");
-    const midi = path.join(process.resourcesPath, "scores", SCORE_MIDI);
-    return { cmd: exe, args: ["--midi", midi, "--port", String(CORE_PORT)], cwd: path.dirname(exe) };
+    const scores = path.join(process.resourcesPath, "scores");
+    return { cmd: exe, args: ["--scores-dir", scores, "--port", String(CORE_PORT)], cwd: path.dirname(exe) };
   }
   const root = repoRoot();
   const python = path.join(root, "core", ".venv", "Scripts", "python.exe");
-  const midi = path.join(root, "muse-score", SCORE_MIDI);
-  return { cmd: python, args: ["-m", "violin_core", "--midi", midi, "--port", String(CORE_PORT)], cwd: path.join(root, "core") };
+  const scores = path.join(root, "scores");
+  return { cmd: python, args: ["-m", "violin_core", "--scores-dir", scores, "--port", String(CORE_PORT)], cwd: path.join(root, "core") };
 }
 
 function startCore() {

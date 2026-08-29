@@ -1,7 +1,7 @@
 # アーキテクチャ設計ガイド
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 05:40
+更新日時: 2026-08-30 06:30
 
 採用方針の根拠は [../reference/approach-comparison.md](../reference/approach-comparison.md) を参照。本書は実装時に守る構成と境界を定める。
 
@@ -17,7 +17,7 @@
 
 - follower の内部実装(DTW / HMM)を下流に漏らさない。
 - 音符 ID は返さない。UI は拍位置から描画座標を計算する。
-- 実装(Phase 0): core は約 30 Hz で `{"type":"state", position, tempo, confidence, playing, rate, length, time}` を送る。UI → core は `{"cmd": "play"|"stop"|"reset"|"seek"|"rate", ...}`。詳細は `core/violin_core/server.py` の docstring。
+- 実装(Phase 0): core は接続時に `{"type":"songs", songs, current}` を 1 回、その後約 30 Hz で `{"type":"state", position, tempo, confidence, playing, rate, length, song, time}` を送る。UI → core は `{"cmd": "play"|"stop"|"reset"|"seek"|"rate"|"load", ...}`。詳細は `core/violin_core/server.py` の docstring。
 
 ## 2. プロセス構成
 
@@ -65,19 +65,21 @@ rate     = clamp(slew_limit(rate_raw), 0.7, 1.4)
 ## 4. ui の要点
 
 - OpenSheetMusicDisplay で MusicXML を描画する。
-- カーソルは音符単位の遷移ではなく、拍位置(連続値)から座標を計算して描く。実装は `ui/src/cursor.ts`: 読み込み時に OSMD の Cursor を末尾まで進めて (拍, x 座標, 小節番号) の表を作り、実行時はその表を線形補間する。OSMD のタイムスタンプは全音符 = 1.0 なので 4 倍して拍にする。
+- カーソルは音符単位の遷移ではなく、拍位置(連続値)から座標を計算して描く。実装は `ui/src/cursor.ts`: 読み込み時に OSMD の Cursor を末尾まで進めて (拍, x 座標, 小節番号) の表を作り、実行時はその表を線形補間する。OSMD のタイムスタンプは全音符 = 1.0 なので 4 倍して拍にする。反復で後ろへ飛ぶ区間は補間せず、飛ぶ瞬間まで留まる。
 - 横 1 段の連続スクロール。現在位置を画面の 1/3 に固定し、次の小節が常に見えるようにする。
 - confidence をカーソルの不透明度または色で表す。
 - セッション後は音符ごとの音程偏差(セント)・タイミング偏差(ms)を譜面に重ねる。
 
 ## 5. 楽譜データの流れ
 
-MuseScore プロジェクト(`.mscz`)を唯一のソースとし、CLI で MusicXML と MIDI を書き出す。
+MuseScore プロジェクト(`score.mscz`)を唯一のソースとし、MusicXML と MIDI を書き出して同じフォルダに置く(`scores/<song_id>/`、構成は `scores/README.md`)。
 
 ```
-song.mscz ─ MuseScore4 -o score.musicxml ─→ ui(OSMD)/ core(partitura)
-          └ MuseScore4 -o accomp.mid     ─→ core(伴奏)
+scores/<id>/score.mscz ─ MuseScore4 -o score.mxl ─→ ui(OSMD)/ core(partitura)
+                       └ MuseScore4 -o score.mid ─→ core(伴奏)
 ```
+
+core は `scores/` を走査して曲一覧を作り(`songs.py`)、UI は `song.json` の表示名でプルダウンを出す。MuseScore の MIDI は反復記号を展開して書き出されるので、UI 側のカーソル表は OSMD の `CurrentEnrolledTimestamp`(展開後の時刻)を拍として使う。
 
 ## 6. 検証戦略
 

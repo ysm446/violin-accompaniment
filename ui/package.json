@@ -41,11 +41,12 @@
         "to": "core"
       },
       {
-        "from": "../muse-score",
+        "from": "../scores",
         "to": "scores",
         "filter": [
-          "*.mid",
-          "*.mxl"
+          "**/score.mid",
+          "**/score.mxl",
+          "**/song.json"
         ]
       }
     ],

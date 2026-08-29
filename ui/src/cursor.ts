@@ -13,6 +13,9 @@ export interface CursorPoint {
 /**
  * OSMD の Cursor を先頭から末尾まで進め、各音符位置の (拍, 座標) 表を作る。
  * 実行時はこの表を補間して連続値の拍位置から座標を得る。
+ *
+ * 拍には CurrentEnrolledTimestamp(反復記号を展開した後の時刻)を使う。
+ * MuseScore が書き出す MIDI は反復を展開しているので、これで MIDI の拍と揃う。
  * OSMD のタイムスタンプは全音符 = 1.0 なので、拍に直すために 4 倍する。
  */
 export function buildCursorMap(osmd: OpenSheetMusicDisplay): CursorPoint[] {
@@ -24,7 +27,7 @@ export function buildCursorMap(osmd: OpenSheetMusicDisplay): CursorPoint[] {
   let guard = 0;
   while (!it.EndReached && guard++ < 100000) {
     const el = cursor.cursorElement;
-    const beat = it.currentTimeStamp.RealValue * 4;
+    const beat = it.CurrentEnrolledTimestamp.RealValue * 4;
     const left = parseFloat(el.style.left) || 0;
     const top = parseFloat(el.style.top) || 0;
     const height = parseFloat(el.style.height) || el.height || 0;
@@ -58,6 +61,8 @@ export function interpolate(points: CursorPoint[], beat: number): CursorPoint | 
   }
   const a = points[lo];
   const b = points[hi];
+  // 反復記号で後ろへ飛ぶ区間は補間せず、飛ぶ瞬間まで a に留まる
+  if (b.left < a.left) return a;
   const t = (beat - a.beat) / (b.beat - a.beat);
   return { beat, left: a.left + (b.left - a.left) * t, top: a.top, height: a.height, measure: a.measure };
 }

@@ -1,7 +1,7 @@
 # plan — 実装方針と優先順位
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 05:40
+更新日時: 2026-08-30 06:30
 
 ## 実装方針
 
@@ -12,7 +12,7 @@
 - リプレイ基盤(録音・特徴量・推定値の記録とオフライン再評価)を Phase 1 から組み込む。
 - 譜面 UI を追従より先に作り、デバッグビューアとして使う。
 - Python の依存関係は `core/.venv`(`python -m venv`)に閉じ込める。グローバル環境にはインストールしない。
-- 楽譜のソースは `muse-score/*.mscz`(MuseScore 4)。MuseScore 4 の CLI(`MuseScore4.exe -o out.musicxml in.mscz`)で MusicXML(`.mxl`)/ MIDI に書き出し、同じ `muse-score/` に置いて core / ui が読む。CLI が使えない環境では GUI の「ファイル > 書き出し」で同じ形式を出す。
+- 楽譜は `scores/<song_id>/` に曲ごとにまとめる(`score.mscz` がソース、`score.mxl` / `score.mid` は MuseScore 4 から書き出し、`song.json` に表示名)。構成は `scores/README.md`。
 
 ## フェーズと完了条件
 
@@ -58,4 +58,3 @@ Phase 0 の成果物は [progress.md](progress.md) と [../../README.md](../../R
 - Python core を C++ に移植する判断基準(Phase 3 の精度が出た時点で決める)。
 - 反復記号の展開に対応する時期。
 - 伴奏音源(SF2 / SFZ)の配布方法とライセンス。
-- 曲の選択 UI(現在は `SCORE_MIDI` / `SCORE_URL` の固定指定)。

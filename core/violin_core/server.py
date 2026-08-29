@@ -1,11 +1,15 @@
 """WebSocket サーバ。UI へ {position, tempo, confidence} を配信し、制御コマンドを受ける。
 
-core → ui(約 30 Hz):
-  {"type": "state", "position": 12.5, "tempo": 70.0, "confidence": 1.0,
-   "playing": true, "rate": 1.0, "length": 332.0}
+core → ui:
+  接続直後に 1 回:
+    {"type": "songs", "songs": [{"id", "name", "xml", "midi"}, ...], "current": "<id>"}
+  約 30 Hz:
+    {"type": "state", "position": 12.5, "tempo": 70.0, "confidence": 1.0,
+     "playing": true, "rate": 1.0, "length": 332.0, "song": "<id>", "time": <unix秒>}
 ui → core:
   {"cmd": "play"} / {"cmd": "stop"} / {"cmd": "reset"}
   {"cmd": "seek", "beat": 32.0} / {"cmd": "rate", "value": 0.9}
+  {"cmd": "load", "song": "<id>"}
 """
 
 from __future__ import annotations
@@ -17,12 +21,26 @@ import time
 import websockets
 from websockets.asyncio.server import ServerConnection, serve
 
+from .midi_score import load_midi
 from .player import MidiPlayer
+from .songs import Song
 
 
 class StateServer:
-    def __init__(self, player: MidiPlayer, host: str = "127.0.0.1", port: int = 8765, hz: float = 30.0):
+    def __init__(
+        self,
+        player: MidiPlayer,
+        songs: list[Song],
+        current: str | None,
+        exclude_tracks: tuple[str, ...],
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        hz: float = 30.0,
+    ):
         self.player = player
+        self.songs = {s.id: s for s in songs}
+        self.current = current
+        self.exclude_tracks = exclude_tracks
         self.host = host
         self.port = port
         self.interval = 1.0 / hz
@@ -38,12 +56,17 @@ class StateServer:
             "playing": p.playing,
             "rate": p.rate,
             "length": p.score.length_beats,
+            "song": self.current,
             "time": time.time(),  # 送信時刻(遅延計測用)
         }
+
+    def songs_message(self) -> dict:
+        return {"type": "songs", "songs": [s.to_dict() for s in self.songs.values()], "current": self.current}
 
     async def _handler(self, ws: ServerConnection) -> None:
         self._clients.add(ws)
         try:
+            await ws.send(json.dumps(self.songs_message()))
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
@@ -69,6 +92,22 @@ class StateServer:
             p.seek(float(msg.get("beat", 0.0)))
         elif cmd == "rate":
             p.set_rate(float(msg.get("value", 1.0)))
+        elif cmd == "load":
+            self.load_song(str(msg.get("song", "")))
+
+    def load_song(self, song_id: str) -> None:
+        song = self.songs.get(song_id)
+        if song is None:
+            print(f"[core] 不明な曲 id: {song_id}")
+            return
+        if song_id == self.current:
+            self.player.stop()
+            self.player.seek(0.0)
+            return
+        score = load_midi(song.midi, exclude_tracks=self.exclude_tracks)
+        self.player.load(score)
+        self.current = song_id
+        print(f"[core] load: {song.midi.name} events={len(score.events)} length={score.length_beats:.1f} beats")
 
     async def _broadcast_loop(self) -> None:
         while True:

@@ -7,7 +7,7 @@
 ```
 core/         Python: 音声処理・追従・MIDI 伴奏(現在は固定テンポ再生 + 位置配信)
 ui/           Electron + Vite + TypeScript + OpenSheetMusicDisplay: 譜面表示とカーソル
-muse-score/   楽譜ソース(.mscz)と書き出し済みの .mxl / .mid
+scores/       楽譜。曲ごとに 1 フォルダ(score.mscz / score.mxl / score.mid / song.json)。詳細は scores/README.md
 docs/         設計・計画・進捗
 ```
 
@@ -20,7 +20,7 @@ core と ui は別プロセスで、WebSocket(`ws://127.0.0.1:8765`)で `{positi
 - `violin-accompaniment-0.1.0-portable.exe` — インストール不要。ダブルクリックで起動
 - `violin-accompaniment Setup 0.1.0.exe` — インストーラ版
 
-起動すると譜面が表示され、「再生」で伴奏(Windows 標準音源)が鳴りカーソルが進む。譜面クリックでシーク。
+起動すると譜面が表示され、「再生」で伴奏(Windows 標準音源)が鳴りカーソルが進む。譜面クリックでシーク。曲はツールバーのプルダウンで切り替える(前回の曲を記憶)。
 
 ## 開発環境のセットアップ(初回)
 
@@ -46,7 +46,7 @@ npm run ui       # ブラウザ版(http://localhost:5173、core は別途起動�
 
 - VS Code のターミナルでは `ELECTRON_RUN_AS_NODE=1` が設定されていることがあり、Electron が素の Node として起動してしまう。`start.bat` はこれを解除している。手動のときは `set ELECTRON_RUN_AS_NODE=` を先に実行する。
 - 別の MIDI 出力先を使う: `cd core && .venv/Scripts/python -m violin_core --list-ports` で確認し、`--midi-out "名前の一部"` を付ける。
-- 別の曲: `ui/electron/main.cjs` の `SCORE_MIDI` と `ui/src/main.ts` の `SCORE_URL` を対で変える。
+- 曲の追加: `scores/<曲id>/` に `score.mxl` と `score.mid`(と `song.json`)を置く。詳細は [scores/README.md](scores/README.md)。
 
 ## ビルドと検証
 
