@@ -52,11 +52,14 @@ def main() -> None:
     print(f"frames: recorded={len(rec['flux'])} offline={len(off['flux'])} compared={n}")
     if n == 0:
         return
-    chroma_err = np.abs(rec["chroma"][:n] - off["chroma"][:n]).max()
-    level_err = np.abs(rec["level_db"][:n] - off["level_db"][:n]).max()
-    print(f"max |chroma diff| = {chroma_err:.4f}   max |level diff| = {level_err:.2f} dB  (16bit 量子化の分だけ差が出る)")
-    active = rec["level_db"][:n] > -60
-    print(f"active frames: {int(active.sum())} / {n}")
+    # 無音付近は 16bit 量子化(床 ≒ -96 dB)と無音判定の境界で差が出るので、有音フレームだけで比較する
+    active = rec["level_db"][:n] > -55
+    chroma_err = np.abs(rec["chroma"][:n] - off["chroma"][:n]).max(axis=1)
+    level_err = np.abs(rec["level_db"][:n] - off["level_db"][:n])
+    print(f"active frames (> -55 dB): {int(active.sum())} / {n}")
+    if active.any():
+        print(f"  max |chroma diff| = {chroma_err[active].max():.4f}   max |level diff| = {level_err[active].max():.2f} dB  (0 に近いほどオンラインと一致)")
+    print(f"  silent frames: chroma mismatch {int((chroma_err[~active] > 0.05).sum())}, level mismatch {int((level_err[~active] > 0.5).sum())}  (量子化由来、無視してよい)")
     if active.any():
         mean_chroma = rec["chroma"][:n][active].mean(axis=0)
         from .features import PITCH_CLASSES
