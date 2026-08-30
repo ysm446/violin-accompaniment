@@ -10,9 +10,8 @@ if not exist core\.venv\Scripts\python.exe (
   if errorlevel 1 exit /b 1
 )
 if not exist ui\node_modules (
-  echo [start] ui\node_modules not found. Run: npm --prefix ui install
-  pause
-  exit /b 1
+  call :setup_ui
+  if errorlevel 1 exit /b 1
 )
 
 rem VS Code sets this and it makes Electron run as plain Node.
@@ -54,3 +53,22 @@ rem Remove the half-built venv so the next run starts clean.
 if exist core\.venv rmdir /s /q core\.venv
 pause
 exit /b 1
+
+rem ---------------------------------------------------------------
+rem Install the ui dependencies (ui\node_modules).
+:setup_ui
+echo [start] ui\node_modules not found. Installing...
+where npm >nul 2>nul
+if errorlevel 1 (
+  echo [start] npm not found on PATH. Install Node.js from https://nodejs.org/ and run start.bat again.
+  pause
+  exit /b 1
+)
+call npm --prefix ui install
+if errorlevel 1 (
+  echo [start] Failed to install the ui dependencies. See the messages above.
+  pause
+  exit /b 1
+)
+echo [start] ui\node_modules is ready.
+exit /b 0
