@@ -26,10 +26,37 @@ class TempoChange:
     bpm: float
 
 
+@dataclass(frozen=True)
+class Meter:
+    beat: float
+    numerator: int
+    denominator: int
+
+    @property
+    def click_unit(self) -> float:
+        """メトロノームの 1 拍の長さ(四分音符 = 1.0)。複合拍子(6/8, 12/8 …)は付点四分。"""
+        if self.denominator == 8 and self.numerator % 3 == 0 and self.numerator >= 6:
+            return 1.5
+        return 4.0 / self.denominator
+
+    @property
+    def clicks_per_bar(self) -> int:
+        if self.click_unit == 1.5:
+            return self.numerator // 3
+        return self.numerator
+
+
+@dataclass(frozen=True)
+class Click:
+    beat: float
+    accent: bool  # 小節の頭
+
+
 @dataclass
 class MidiScore:
     events: list[MidiEvent] = field(default_factory=list)
     tempos: list[TempoChange] = field(default_factory=list)
+    meters: list[Meter] = field(default_factory=list)
     length_beats: float = 0.0
     track_names: list[str] = field(default_factory=list)
     played_tracks: list[str] = field(default_factory=list)
@@ -46,6 +73,26 @@ class MidiScore:
     @property
     def score_bpm(self) -> float:
         return self.tempos[0].bpm if self.tempos else 120.0
+
+    def clicks(self) -> list[Click]:
+        """メトロノームのクリック列。拍子ごとに区間を分け、各区間の先頭から拍を刻む。
+        拍子が無ければ 4/4 とみなす。弱起の小節(例: 1/8)は短い区間として扱われる。"""
+        meters = self.meters or [Meter(0.0, 4, 4)]
+        out: list[Click] = []
+        for i, m in enumerate(meters):
+            end = meters[i + 1].beat if i + 1 < len(meters) else self.length_beats
+            unit, per_bar = m.click_unit, max(1, m.clicks_per_bar)
+            if i == 0 and i + 1 < len(meters):
+                nxt = meters[1]
+                if end - m.beat < nxt.click_unit * nxt.clicks_per_bar - 1e-6:
+                    continue  # 弱起(次の拍子の 1 小節に満たない先頭区間)は刻まず、最初の小節頭から始める
+            k = 0
+            beat = m.beat
+            while beat < end - 1e-6:
+                out.append(Click(beat, k % per_bar == 0))
+                k += 1
+                beat = m.beat + k * unit
+        return out
 
 
 def _track_name(track: mido.MidiTrack) -> str:
@@ -75,6 +122,8 @@ def load_midi(path: str | Path, exclude_tracks: tuple[str, ...] = DEFAULT_EXCLUD
             beat = tick / ppq
             if msg.type == "set_tempo":
                 score.tempos.append(TempoChange(beat, mido.tempo2bpm(msg.tempo)))
+            elif msg.type == "time_signature":
+                score.meters.append(Meter(beat, msg.numerator, msg.denominator))
             elif play and not msg.is_meta:
                 score.events.append(MidiEvent(beat, msg))
             score.length_beats = max(score.length_beats, beat)
@@ -87,4 +136,12 @@ def load_midi(path: str | Path, exclude_tracks: tuple[str, ...] = DEFAULT_EXCLUD
         if not dedup or dedup[-1].beat != t.beat or dedup[-1].bpm != t.bpm:
             dedup.append(t)
     score.tempos = dedup
+    score.meters.sort(key=lambda m: m.beat)
+    dedup_m: list[Meter] = []
+    for m in score.meters:
+        if dedup_m and dedup_m[-1].beat == m.beat:
+            dedup_m[-1] = m
+        elif not dedup_m or (dedup_m[-1].numerator, dedup_m[-1].denominator) != (m.numerator, m.denominator):
+            dedup_m.append(m)
+    score.meters = dedup_m
     return score

@@ -4,6 +4,7 @@ body { display: flex; flex-direction: column; }
 #toolbar button { padding: 4px 10px; }
 #toolbar select { max-width: 260px; }
 #btn-follow.on { background: #2a7; color: #fff; }
+#btn-metronome.on { background: #a72; color: #fff; }
 #playhead.follow { background: rgba(40, 120, 220, 0.85); }
 #toolbar label { display: flex; gap: 6px; align-items: center; }
 .status { padding: 2px 8px; border-radius: 4px; background: #a33; }

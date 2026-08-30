@@ -14,6 +14,7 @@ interface State {
   rate: number;
   length: number;
   song: string | null;
+  metronome?: boolean;
   audio?: AudioStatus;
   follow?: {
     position: number; tempo: number; confidence: number; raw_position: number;
@@ -181,6 +182,8 @@ function connect(): void {
 
 const followBtn = $<HTMLButtonElement>("btn-follow");
 let followOn = false;
+const metronomeBtn = $<HTMLButtonElement>("btn-metronome");
+let metronomeOn = false;
 
 function tick(): void {
   if (latest) audioPanel.update(latest.audio);
@@ -192,6 +195,12 @@ function tick(): void {
       followBtn.textContent = enabled ? "◎ 追従 ON" : "◎ 追従 OFF";
       followBtn.classList.toggle("on", enabled);
       playhead.classList.toggle("follow", enabled);
+    }
+    const metro = !!latest.metronome;
+    if (metro !== metronomeOn) {
+      metronomeOn = metro;
+      metronomeBtn.textContent = metro ? "♩ メトロノーム ON" : "♩ メトロノーム OFF";
+      metronomeBtn.classList.toggle("on", metro);
     }
     // 追従モードでは追従器の位置でカーソルを動かす(確信度は不透明度に)
     const pos = enabled && f ? f.position : latest.position;
@@ -210,6 +219,7 @@ function tick(): void {
 }
 
 followBtn.onclick = () => send({ cmd: "follow", on: !followOn });
+metronomeBtn.onclick = () => send({ cmd: "metronome", on: !metronomeOn });
 
 $("btn-play").onclick = () => send({ cmd: "play" });
 $("btn-stop").onclick = () => send({ cmd: "stop" });

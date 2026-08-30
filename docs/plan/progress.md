@@ -1,7 +1,7 @@
 # progress — 進捗と注意点
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 14:05
+更新日時: 2026-08-30 14:40
 
 ## 現在の状態
 
@@ -56,6 +56,9 @@ Phase 3 完了(オンライン追従 + 伴奏同期の最初の形)。「弾く�
   - 評価(記録ごとに「オフライン整列と 1 秒以上ずれたフレームが過半数の 10 秒区間」の数、変更前 → 後): 春 254 s: 19/26 → 12/26、ノクターン 218 s: 15/22 → 14/22、ノクターン 73 s: 6/7 → 4/7、春 54 s(最初の記録): 0/6 → 0/6。合成: 全体 中央値 39 → 59 ms・p95 527 → 289 ms、連打 p95 59 → 113 ms、再アンカー 1.05 → 2.54 s(拍 40 の楽句が拍 316 と同一で、設計どおり 2.5 秒聞いてから決める)。実演奏 #1: 中央値 125 → 199 ms、p95 1444 → 792 ms。
   - 残る課題: ノクターンのように反復・類似の多い曲では、オンライン追従は「どのコピーか」を決められない。伴奏の音は同じなので、直前の位置に近いコピーで鳴らしてしまう(継続性を優先)方針を server 側で検討する。追従の評価は `recordings/` の 4 本を `tools/` 化して回帰に使う。
 - 2026-08-30: 楽譜を 3 曲追加(`merry_christmas_mr_lawrence` / `energy_flow` / `vivaldi_summer_3`)。いずれも Violin / Piano / Piano の 3 トラック、480 ppq。ユーザーが置いたファイルを `score.mscz` / `score.mxl` / `score.mid` に改名し `song.json` を追加した。
+
+- 2026-08-30: ユーザーの要望でフェードインとメトロノーム。`player.py` に CC11 による gain のフェード(`play(fade_in_sec)` / `fade_stop(sec)`、再生スレッドがフェード完了時に stop)とメトロノーム(`metronome` フラグ、`MidiScore.clicks()` の拍列を GM パーカッション ch10 の Wood Block で鳴らす)。`midi_score.py` が `time_signature` を `meters` に読む。server: `follow_settings` に `fade_in_sec` 1.0 / `fade_out_sec` 0.3、コマンド `{"cmd":"metronome","on":bool}`、state に `metronome`。UI にトグルボタン。テスト `tests/test_player_extras.py`(拍列・フェード・クリック)。
+  - 注意: GS Wavetable は CC11 に対応している前提。楽譜の MIDI は CC7 をトラック先頭で送るので CC7 は使えない。
 
 ## 未完了
 

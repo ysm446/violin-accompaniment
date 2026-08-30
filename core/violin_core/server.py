@@ -90,6 +90,8 @@ class StateServer:
             "rate_min": 0.8,
             "rate_max": 1.25,
             "silence_stop_sec": 1.0,  # 休符でない無音がこの時間続いたら伴奏を止める
+            "fade_in_sec": 1.0,  # 追従モードで伴奏を始めるときのフェードイン
+            "fade_out_sec": 0.3,  # 追従モードで伴奏を止めるときのフェードアウト
             "rest_grace_sec": 1.0,  # 休符中は休符の長さ + この時間まで待つ
         }
         self._silence_since: float | None = None
@@ -163,7 +165,7 @@ class StateServer:
                 if st.in_rest:
                     limit = self._rest_remaining_sec(st.position, p) + cfg["rest_grace_sec"]
                 if silence >= limit or st.lost:
-                    p.stop()
+                    p.fade_stop(cfg["fade_out_sec"])
                     self._follow_rate = 1.0
                     p.set_rate(1.0)
                     self.follow_mode = "waiting"
@@ -174,7 +176,7 @@ class StateServer:
             # 弾き始めてしばらく安定してから伴奏を出す
             if self._stable_frames >= cfg["start_wait_sec"] * fps:
                 p.seek(st.position)
-                p.play()
+                p.play(fade_in_sec=cfg["fade_in_sec"])
                 self._last_seek_time = now
                 self._follow_rate = 1.0
                 self.follow_mode = "playing"
@@ -193,7 +195,7 @@ class StateServer:
             # ずれが続いたら、飛びつく(シーク)のではなく伴奏を止めて、確実になってから再開する
             self._disagree_frames += 1
             if self._disagree_frames >= cfg["seek_wait_sec"] * fps:
-                p.stop()
+                p.fade_stop(cfg["fade_out_sec"])
                 p.set_rate(1.0)
                 self._follow_rate = 1.0
                 self._seek_count += 1
@@ -294,6 +296,7 @@ class StateServer:
             "rate": p.rate,
             "length": p.score.length_beats,
             "song": self.current,
+            "metronome": bool(getattr(self.player, "metronome", False)),
             "time": time.time(),  # 送信時刻(遅延計測用)
         }
         if self.analysis is not None:
@@ -375,6 +378,8 @@ class StateServer:
                 self.follower.reset()
             p.stop()
             p.seek(0.0)
+        elif cmd == "metronome":
+            p.metronome = bool(msg.get("on", False))
         elif cmd == "analyze":
             self._analyze_async(str(msg.get("session", "")))
         return None
