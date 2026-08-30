@@ -61,7 +61,8 @@ class OnlineFollower:
         onset_threshold: float = 0.3,
         onset_rise_db: float = 6.0,
         onset_chroma_scale: float = 0.5,
-        onset_bonus: float = 1.0,
+        onset_bonus: float = 0.5,
+        onset_miss_cost: float = 0.5,
         onset_hold: tuple[float, ...] = (0.7, 0.4),
         transient_damp: float = 0.5,
         fire_snap: bool = True,
@@ -87,7 +88,7 @@ class OnlineFollower:
         uniqueness_scale: float = 6.0,
         confidence_floor: float = 0.2,
         margin_scale: float = 4.0,
-        restart_penalty: float = 15.0,
+        restart_penalty: float = 30.0,
         silence_db: float = -55.0,
         chroma_peak_min: float = 0.45,
         tempo_window_sec: float = 3.0,
@@ -136,6 +137,7 @@ class OnlineFollower:
         self.onset_rise_db = onset_rise_db
         self.onset_chroma_scale = onset_chroma_scale
         self.onset_bonus = onset_bonus
+        self.onset_miss_cost = onset_miss_cost
         self.onset_hold = tuple(onset_hold)
         self.transient_damp = transient_damp
         self.fire_snap = fire_snap
@@ -283,7 +285,6 @@ class OnlineFollower:
                 and float(chroma.max()) >= self.chroma_peak_min
             )
             # --- コスト行 ---
-            bonus = None
             if active:
                 c = 1.0 - self.ref @ chroma.astype(np.float32)
                 c[self.ref_sil] = 1.0
@@ -298,25 +299,31 @@ class OnlineFollower:
                 fired_now = on > self._last_fired and on >= self.onset_threshold
                 self._last_fired = on
                 if self.onset_weight > 0:
-                    c_raw += self.onset_weight * (np.maximum(self.ref_onset - on, 0.0) + 0.3 * np.maximum(on - self.ref_onset, 0.0))
-                    # 毎フレームの非対称ペナルティ: 楽譜のオンセットが音に無い → 重い(頭が密な区間に音が
-                    # 停滞していると不一致)。音の余分なオンセット(弓返し等)→ 軽い。
-                    c += self.onset_weight * (np.maximum(self.ref_onset - on, 0.0) + 0.3 * np.maximum(on - self.ref_onset, 0.0))
-                if self.onset_bonus > 0 and on > 0:
-                    # 発火中に前進ステップで音符の頭の列に「入った」ときの報酬(負の遷移コスト)。
-                    # ペナルティだけだと同音連打では境目を越えるほうが停滞(0)より高くつき、パスが最初の音符に
-                    # 張り付いて数秒遅れる。報酬で「発火に合わせた越境」を停滞より安くする。停滞には付けない
-                    # (付けると、いま居る音符の頭が毎回最小になって raw が 1 音戻る)。
-                    bonus = (self.onset_bonus * on) * self.ref_head
+                    # 音の余分なオンセット(弓返し等)が楽譜に無い所で鳴ったときの軽いペナルティ(毎フレーム、
+                    # 三角パルスで ±2 刻みの許容)。「楽譜のオンセットが音に無い」ほうは毎フレームではなく、
+                    # 頭の列を通過するときの 1 回きりの遷移コスト(下の head_cost)にする。毎フレームにすると
+                    # 16 分音符の楽句(4 列ごとに頭 → 全列が三角の中)で音符ごとに数点積み上がり、同じ音型を
+                    # 長い音価で持つ別区間(再現部の tutti 等)に必ず負ける
+                    extra = (self.onset_weight * 0.3) * np.maximum(on - self.ref_onset, 0.0)
+                    c += extra
+                    c_raw += extra
+                # 頭の列に前進ステップで入るときの遷移コスト: 発火に一致していれば報酬(負)、無ければ小さな減点。
+                # 停滞には付けない(付けると、いま居る音符の頭が毎回最小になって raw が 1 音戻る)
+                head_cost = (self.onset_miss_cost * (1.0 - on) - self.onset_bonus * on) * self.ref_head
+                head_cost_raw = (self.onset_miss_cost * (1.0 - on)) * self.ref_head
                 self._active_frames += 1
             else:
                 c = np.zeros(len(self.ref), dtype=np.float32)
                 c_raw = c
+                head_cost = head_cost_raw = None
             # --- 一意性判定用の累積コスト: 減衰・報酬を入れない(それらは追従の頑健さには効くが、
             # 「楽譜上の他の場所より十分良いか」の証拠を弱める。伴奏の開始条件はこちらで測る)
             pu = self.Du
             u1 = np.empty_like(pu); u1[0] = np.inf; u1[1:] = pu[:-1]
             u2 = np.empty_like(pu); u2[:2] = np.inf; u2[2:] = pu[:-2] + self.skip_penalty
+            if head_cost_raw is not None:
+                u1[1:] += head_cost_raw[1:]
+                u2[2:] += head_cost_raw[2:] + head_cost_raw[1:-1]  # 早送りで飛び越す頭の分も払う
             bu = np.minimum(pu, np.minimum(u1, u2))
             if self.restart_penalty > 0:
                 bu = np.minimum(bu, self.restart_penalty)
@@ -330,9 +337,9 @@ class OnlineFollower:
             cand2 = np.empty_like(prev)
             cand2[:2] = np.inf
             cand2[2:] = prev[:-2] + self.skip_penalty
-            if bonus is not None:
-                cand1[1:] -= bonus[1:]
-                cand2[2:] -= bonus[2:]
+            if head_cost is not None:
+                cand1[1:] += head_cost[1:]
+                cand2[2:] += head_cost[2:] + head_cost[1:-1]
             best_prev = np.minimum(prev, np.minimum(cand1, cand2))
             if self.restart_penalty > 0:
                 # どの列からでも新しいパスを始められる(弾き直し・途中からの開始への耐性)
@@ -521,7 +528,12 @@ class OnlineFollower:
                 elif silence < self.lost_after_sec:
                     st.position = min(predicted, self.length_beats)
                 else:
+                    # 見失い: 無音の前の履歴は次の音の場所を決める根拠にならないので累積コストを白紙にし、
+                    # 再探索は無音のあとに聞いた音だけで行う(残すと直前の位置の経路が再スタートペナルティの
+                    # 分だけ有利なまま残り、別の場所から弾き直したときの再アンカーが数秒遅れる)
                     st.lost = True
+                    self.D[:] = 0.0
+                    self.Du[:] = 0.0
                 st.confidence = max(self.confidence_floor, st.confidence * 0.97)
                 st.active = False
             st.frames += 1

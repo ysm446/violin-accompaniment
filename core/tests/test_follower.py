@@ -71,10 +71,11 @@ class FollowerRegressionTest(unittest.TestCase):
         err_ms = np.abs(pos - true) * 60.0 / 75.0 * 1000
         # 途中(拍 32)からの開始
         self.assertLess(np.median(err_ms[active & (T < t_cut) & (T > 3.0)]), 150)
-        # 1.5 秒の無音のあと拍 40 から弾き直し: 2 秒以内に復帰し、その後は追従する
+        # 1.5 秒の無音のあと拍 40 から弾き直し: 拍 40 の楽句は拍 316 にも同一なので、再探索は
+        # lost_max_listen_sec(2.5 秒)まで聞いてから直前の位置に近い候補を採る。3 秒以内に復帰し、その後は追従する
         idx = np.nonzero((T > t_cut + 1.5) & (err_ms < 500) & active)[0]
         self.assertTrue(len(idx) > 0)
-        self.assertLess(T[idx[0]] - t_cut - 1.5, 2.0)
+        self.assertLess(T[idx[0]] - t_cut - 1.5, 3.0)
         self.assertLess(np.median(err_ms[active & (T > t_cut + 3.0)]), 150)
 
 
