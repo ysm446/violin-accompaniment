@@ -31,9 +31,14 @@ core と ui は別プロセスで、WebSocket(`ws://127.0.0.1:8765`)で `{positi
 ## 開発環境のセットアップ(初回)
 
 ```
+npm --prefix ui install
+```
+
+`core/.venv` は `start.bat` が無ければ自動で作る(Python 3 が PATH にあること)。手で作るなら:
+
+```
 python -m venv core/.venv
 core/.venv/Scripts/python -m pip install -r core/requirements.txt
-npm --prefix ui install
 ```
 
 ## 開発時の起動
