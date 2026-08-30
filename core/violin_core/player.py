@@ -36,6 +36,11 @@ class MidiPlayer:
 
         self._tick_interval = tick_interval
         self._lock = threading.Lock()
+        # MIDI 出力は再生スレッドと制御スレッドの双方から触る。
+        # generation が変わった送信バッチは破棄し、stop/seek 後に古い note_on が
+        # ALL_NOTES_OFF を追い越さないよう send_lock で順序を直列化する。
+        self._send_lock = threading.Lock()
+        self._generation = 0
         self._position = 0.0  # 拍
         self._rate = 1.0
         self._playing = False
@@ -70,6 +75,7 @@ class MidiPlayer:
     def stop(self) -> None:
         with self._lock:
             self._playing = False
+            self._generation += 1
         self.all_notes_off()
 
     def seek(self, beat: float) -> None:
@@ -77,6 +83,7 @@ class MidiPlayer:
         with self._lock:
             self._position = beat
             self._next_event = self._first_event_at_or_after(beat)
+            self._generation += 1
         self.all_notes_off()
 
     def load(self, score: MidiScore) -> None:
@@ -86,6 +93,7 @@ class MidiPlayer:
             self.score = score
             self._position = 0.0
             self._next_event = 0
+            self._generation += 1
         self.all_notes_off()
 
     def set_rate(self, rate: float) -> None:
@@ -93,14 +101,18 @@ class MidiPlayer:
             self._rate = max(0.1, min(rate, 4.0))
 
     def all_notes_off(self) -> None:
+        with self._send_lock:
+            self._all_notes_off_unlocked()
+
+    def _all_notes_off_unlocked(self) -> None:
         for ch in range(16):
             self._out.send_message([0xB0 | ch, ALL_NOTES_OFF, 0])
             self._out.send_message([0xB0 | ch, ALL_SOUND_OFF, 0])
 
     def close(self) -> None:
+        self.stop()
         self._stop_flag.set()
         self._thread.join(timeout=1.0)
-        self.all_notes_off()
         self._out.close_port()
 
     # ---- 内部 ----
@@ -130,10 +142,16 @@ class MidiPlayer:
                 self._position += dt * bpm / 60.0 * self._rate
                 events = self.score.events
                 to_send = []
+                generation = self._generation
                 while self._next_event < len(events) and events[self._next_event].beat <= self._position:
                     to_send.append(events[self._next_event].message)
                     self._next_event += 1
                 if self._position >= self.score.length_beats:
                     self._playing = False
-            for msg in to_send:
-                self._out.send_message(msg.bytes())
+            if to_send:
+                with self._send_lock:
+                    with self._lock:
+                        stale = generation != self._generation
+                    if not stale:
+                        for msg in to_send:
+                            self._out.send_message(msg.bytes())

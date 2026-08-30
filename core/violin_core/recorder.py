@@ -47,8 +47,9 @@ class SessionRecorder:
             if self._dir is not None:
                 return self._dir
             self.root.mkdir(parents=True, exist_ok=True)
-            self._dir = self.root / datetime.now().strftime("%Y%m%d-%H%M%S")
-            self._dir.mkdir(parents=True, exist_ok=True)
+            # 秒単位では素早い再開時に既存セッションを上書きするため、マイクロ秒まで含める。
+            self._dir = self.root / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            self._dir.mkdir(parents=True, exist_ok=False)
             self._wav = wave.open(str(self._dir / "audio.wav"), "wb")
             self._wav.setnchannels(1)
             self._wav.setsampwidth(2)

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -42,6 +43,9 @@ from .audio import InputDevice, MicSource
 from .midi_score import load_midi
 from .player import MidiPlayer
 from .songs import Song
+
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ALLOWED_ORIGINS = [None, "file://", re.compile(r"^http://(?:localhost|127\.0\.0\.1):\d+$")]
 
 
 class StateServer:
@@ -236,11 +240,8 @@ class StateServer:
         return {"type": "sessions", "sessions": items}
 
     def _analyze_async(self, session_id: str) -> None:
-        root = self.recordings_dir
-        if root is None:
-            return
-        session = root / session_id
-        if not (session / "meta.json").exists():
+        session = self._session_path(session_id)
+        if session is None or not (session / "meta.json").exists():
             self._post({"type": "analysis", "error": f"セッションが見つかりません: {session_id}"})
             return
 
@@ -260,6 +261,17 @@ class StateServer:
 
         self._post({"type": "analysis", "session": session_id, "status": "running"})
         threading.Thread(target=work, name="analyze", daemon=True).start()
+
+    def _session_path(self, session_id: str) -> Path | None:
+        """recordings 直下に実在する安全なセッション ID だけを受け付ける。"""
+        root = self.recordings_dir
+        if root is None or not SESSION_ID_RE.fullmatch(session_id):
+            return None
+        root = root.resolve()
+        session = (root / session_id).resolve()
+        if session.parent != root or not session.is_dir():
+            return None
+        return session
 
     def _post(self, msg: dict) -> None:
         """他スレッドから全クライアントへ送る。"""
@@ -323,16 +335,23 @@ class StateServer:
         cmd = msg.get("cmd")
         p = self.player
         if cmd == "play":
-            p.play()
+            if self.follow_enabled:
+                # 追従中は _on_frame の確実性ゲートだけが再生を開始できる。
+                p.stop()
+                self.follow_mode = "waiting"
+            else:
+                p.play()
         elif cmd == "stop":
             p.stop()
         elif cmd == "reset":
             p.stop()
             p.seek(0.0)
         elif cmd == "seek":
-            p.seek(float(msg.get("beat", 0.0)))
+            if not self.follow_enabled:
+                p.seek(float(msg.get("beat", 0.0)))
         elif cmd == "rate":
-            p.set_rate(float(msg.get("value", 1.0)))
+            if not self.follow_enabled:
+                p.set_rate(float(msg.get("value", 1.0)))
         elif cmd == "load":
             self.load_song(str(msg.get("song", "")))
         elif cmd == "input":
@@ -348,9 +367,9 @@ class StateServer:
             self._disagree_frames = 0
             self._silence_since = None
             self.follow_mode = "waiting" if self.follow_enabled else "off"
-            if not self.follow_enabled:
-                p.set_rate(1.0)
-                self._follow_rate = 1.0
+            p.stop()
+            p.set_rate(1.0)
+            self._follow_rate = 1.0
         elif cmd == "follow_reset":
             if self.follower is not None:
                 self.follower.reset()
@@ -368,11 +387,19 @@ class StateServer:
         if song_id == self.current:
             self.player.stop()
             self.player.seek(0.0)
+            if self.follower is not None:
+                self.follower.reset()
+            self._stable_frames = 0
+            self._disagree_frames = 0
+            self.follow_mode = "waiting" if self.follow_enabled else "off"
             return
         score = load_midi(song.midi, exclude_tracks=self.exclude_tracks)
         self.player.load(score)
         self.current = song_id
         self._setup_follower()
+        self._stable_frames = 0
+        self._disagree_frames = 0
+        self.follow_mode = "waiting" if self.follow_enabled else "off"
         print(f"[core] load: {song.midi.name} events={len(score.events)} length={score.length_beats:.1f} beats")
 
     def set_input(self, device) -> None:
@@ -421,6 +448,6 @@ class StateServer:
 
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
-        async with serve(self._handler, self.host, self.port):
+        async with serve(self._handler, self.host, self.port, origins=ALLOWED_ORIGINS):
             print(f"[core] ws://{self.host}:{self.port} で待機中")
             await self._broadcast_loop()

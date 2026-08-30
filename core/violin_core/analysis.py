@@ -55,15 +55,18 @@ class AnalysisEngine:
         self.extractor = FeatureExtractor(sr=sr, n_fft=n_fft, hop=hop)
         self.recorder = recorder
         self._source: AudioSource | None = None
-        self._queue: queue.Queue[tuple[np.ndarray, float]] = queue.Queue(maxsize=256)
+        # リアルタイム入力を数秒遅れで処理する方が危険なので、滞留は約 85 ms に制限する。
+        self._queue: queue.Queue[tuple[np.ndarray, float, int]] = queue.Queue(maxsize=8)
         self._ring = np.zeros(n_fft, dtype=np.float32)
         self._pending = np.zeros(0, dtype=np.float32)
         self._lock = threading.Lock()
+        self._pipeline_lock = threading.Lock()
         self._latest: FeatureFrame | None = None
         self._status = AudioStatus()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._latency_ema = 0.0
+        self._source_generation = 0
         # 特徴量の購読者(follower など)。(frame, adc_time) を受け取る
         self.listeners: list = []
 
@@ -71,25 +74,36 @@ class AnalysisEngine:
 
     def set_source(self, source: AudioSource | None) -> None:
         self.stop_source()
+        self._source_generation += 1
+        generation = self._source_generation
+        self._clear_queue()
         self._source = source
         if source is None:
             self._status.source = ""
             return
         self._status.source = source.name
-        self.extractor.reset()
-        with self._lock:
+        with self._pipeline_lock:
+            self.extractor.reset()
             self._ring[:] = 0.0
             self._pending = np.zeros(0, dtype=np.float32)
-        source.start(self._on_block)
+        source.start(lambda block, adc_time: self._on_block(block, adc_time, generation))
         print(f"[audio] source: {source.name}")
 
     def stop_source(self) -> None:
+        self._source_generation += 1  # 停止中に遅れて届いた callback を無効化する
         if self._source is not None:
             try:
                 self._source.stop()
             except Exception as e:  # noqa: BLE001
                 print(f"[audio] stop error: {e}")
             self._source = None
+
+    def _clear_queue(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return
 
     # ---- ライフサイクル ----
 
@@ -121,45 +135,65 @@ class AnalysisEngine:
 
     # ---- 内部 ----
 
-    def _on_block(self, block: np.ndarray, adc_time: float) -> None:
+    def _on_block(self, block: np.ndarray, adc_time: float, generation: int) -> None:
         # 入力スレッドからは queue に積むだけ。マイクのコールバックはブロック不可なので溢れたら捨てる
+        if generation != self._source_generation:
+            return
         if self._source is not None and self._source.blocking:
-            self._queue.put((block, adc_time))
+            self._queue.put((block, adc_time, generation))
             return
         try:
-            self._queue.put_nowait((block, adc_time))
+            self._queue.put_nowait((block, adc_time, generation))
         except queue.Full:
+            # 最新時刻への追従を優先し、最古のブロックを捨てる。
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait((block, adc_time, generation))
+            except queue.Full:
+                pass
             self._status.overruns += 1
 
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                block, adc_time = self._queue.get(timeout=0.1)
+                block, adc_time, generation = self._queue.get(timeout=0.1)
             except queue.Empty:
+                continue
+            if generation != self._source_generation:
                 continue
             if self.recorder is not None and self.recorder.active:
                 self.recorder.write_audio(block)
-            self._pending = np.concatenate([self._pending, block]) if len(self._pending) else block
-            # ブロックが hop の倍数でない入力にも対応する
-            while len(self._pending) >= self.hop:
-                hop_block = self._pending[: self.hop]
-                self._pending = self._pending[self.hop :]
-                self._ring = np.concatenate([self._ring[self.hop :], hop_block])
-                frame = self.extractor.process(self._ring)
-                now = time.perf_counter()
-                # このホップ末尾の AD 時刻 = ブロック末尾の AD 時刻 - 残りサンプル分
-                hop_adc = adc_time - len(self._pending) / self.sr
-                latency = max(0.0, (now - hop_adc) * 1000.0)
-                self._latency_ema = latency if self._status.frames == 0 else 0.9 * self._latency_ema + 0.1 * latency
-                with self._lock:
-                    self._latest = frame
-                    s = self._status
-                    s.level_db = frame.level_db
-                    s.chroma = frame.chroma.tolist()
-                    s.flux = frame.flux
-                    s.latency_ms = self._latency_ema
-                    s.frames += 1
-                if self.recorder is not None and self.recorder.active:
-                    self.recorder.write_features(frame.chroma, frame.flux, frame.level_db, hop_adc)
-                for fn in self.listeners:
-                    fn(frame, hop_adc)
+            with self._pipeline_lock:
+                if generation != self._source_generation:
+                    continue
+                self._pending = np.concatenate([self._pending, block]) if len(self._pending) else block
+                # ブロックが hop の倍数でない入力にも対応する
+                while len(self._pending) >= self.hop:
+                    hop_block = self._pending[: self.hop]
+                    self._pending = self._pending[self.hop :]
+                    self._ring = np.concatenate([self._ring[self.hop :], hop_block])
+                    frame = self.extractor.process(self._ring)
+                    now = time.perf_counter()
+                    # このホップ末尾の AD 時刻 = ブロック末尾の AD 時刻 - 残りサンプル分
+                    hop_adc = adc_time - len(self._pending) / self.sr
+                    latency = max(0.0, (now - hop_adc) * 1000.0)
+                    self._latency_ema = latency if self._status.frames == 0 else 0.9 * self._latency_ema + 0.1 * latency
+                    with self._lock:
+                        self._latest = frame
+                        s = self._status
+                        s.level_db = frame.level_db
+                        s.chroma = frame.chroma.tolist()
+                        s.flux = frame.flux
+                        s.latency_ms = self._latency_ema
+                        s.frames += 1
+                    if self.recorder is not None and self.recorder.active:
+                        self.recorder.write_features(frame.chroma, frame.flux, frame.level_db, hop_adc)
+                    for fn in list(self.listeners):
+                        try:
+                            fn(frame, hop_adc)
+                        except Exception as e:  # noqa: BLE001
+                            # 1 つの購読者の不具合で音声解析スレッド全体を停止させない。
+                            print(f"[audio] listener error: {e}")

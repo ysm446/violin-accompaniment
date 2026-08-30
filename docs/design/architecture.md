@@ -1,7 +1,7 @@
 # アーキテクチャ設計ガイド
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 15:00
+更新日時: 2026-08-30 12:03
 
 採用方針の根拠は [../reference/approach-comparison.md](../reference/approach-comparison.md) を参照。本書は実装時に守る構成と境界を定める。
 
@@ -26,7 +26,7 @@
 | core | Python | 音声入力、特徴量、追従、テンポ推定、MIDI 伴奏、記録 |
 | ui | Electron(レンダラは Vite + TypeScript) | 譜面表示、カーソル、操作、セッション分析。メインプロセスが core を子プロセスとして起動・停止 |
 
-通信は WebSocket(localhost)。core → ui は 3 値を約 30 Hz で配信、ui → core は制御コマンド(load / start / stop / seek / 設定)。音声データは通さない。
+通信は WebSocket(localhost)。core → ui は 3 値を約 30 Hz で配信、ui → core は制御コマンド(load / start / stop / seek / 設定)。音声データは通さない。接続元 Origin は Electron の `file://` と localhost の開発 UI に制限する。
 
 core を後で C++ に置き換える場合も、この境界は変えない。
 
@@ -38,7 +38,7 @@ core を後で C++ に置き換える場合も、この境界は変えない。
 | --- | --- | --- |
 | audio-io | `audio.py`: `sounddevice` の MicSource(48 kHz mono、ブロック 512)と、リプレイ用の WavSource(同じインターフェース) | ピエゾ / マイク向けの HPF・EQ を設定で差し込めるようにする(未実装) |
 | feature | `features.py`: STFT(n_fft 4096)+ chroma フィルタバンク(12 次元、L2 正規化)+ spectral flux + レベル。numpy のみ | ホップ 512 samples(≒ 10.7 ms)。f0 は演奏後フィードバック用に別途 |
-| analysis | `analysis.py`: 入力ブロック → hop ごとに特徴量、遅延計測、購読者(follower)への配信 | 入力スレッドは queue に積むだけ。マイクは溢れたら捨てる、WAV はブロックして落とさない |
+| analysis | `analysis.py`: 入力ブロック → hop ごとに特徴量、遅延計測、購読者(follower)への配信 | 入力スレッドは queue に積むだけ。マイクは最大 8 ブロック(約 85 ms)とし、溢れたら最古を捨てる。WAV はブロックして落とさない。入力切替時は旧世代のブロックを破棄する |
 | follower | `follower.py`: align.py の DTW 行再帰をフレームごとに進めるオンライン DTW。窓内の近似最小列から観測、再スタート項で弾き直し対応、オンセット項、同音連打の音符カウント | 参照系列は楽譜から合成した chroma。confidence = 直近の一致度 × 累積コストの margin |
 | tempo | 現状: 直近 3 秒の観測位置の回帰を EMA(follower 内)。Phase 4 でカルマンフィルタに置き換える | 瞬間変動をそのまま伴奏に流さない |
 | accomp | MIDI を拍クロックで再生(`player.py`)。音源は Phase 0 では Microsoft GS Wavetable Synth(python-rtmidi)、Phase 3 以降 FluidSynth | レート変調と先読みスケジューリング(下記) |

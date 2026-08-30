@@ -65,6 +65,7 @@ npm run ui       # ブラウザ版(http://localhost:5173、core は別途起動�
 
 ```
 npm run build        # ui の型チェックとビルド
+npm run test:core    # core の回帰テスト
 npm run build:core   # core を PyInstaller で core/dist/violin_core.exe にする
 npm run dist         # 上記 2 つ + electron-builder で ui/release/ に exe を作る
 ```

@@ -2,7 +2,7 @@
 
   cd core && .venv/Scripts/python tools/eval_follower.py            設定の格子評価
   cd core && .venv/Scripts/python tools/eval_follower.py --trace    テンポ変動シナリオの失敗フレーム
-  cd core && .venv/Scripts/python tools/eval_follower.py --trace2 2.0 / --trace3   途中開始+弾き直し / 実演奏のトレース
+  cd core && .venv/Scripts/python tools/eval_follower.py --trace2 [gain] / --trace3   途中開始+弾き直し / 実演奏のトレース
 
 シナリオ: (1) 合成演奏・テンポ 65〜95 で変動、(2) 合成・拍 32 から開始して 48 で 40 に弾き直し、
 (3) 実演奏の記録(オフライン整列を正解とする)。誤差は真のテンポで ms に換算。
@@ -53,9 +53,10 @@ def evaluate(**kw):
     return m1_, mb, ma, re, m3
 if __name__=='__main__':
     if '--trace2' in sys.argv:
-        prior=float(sys.argv[sys.argv.index('--trace2')+1])
-        f=OnlineFollower(notes, 70.0, fps, prior_per_beat=prior)
-        print('scenario 2 (start@32, restart 48->40 at t=%.1f), prior=%.1f' % (t_cut, prior))
+        arg_i=sys.argv.index('--trace2')+1
+        gain=float(sys.argv[arg_i]) if arg_i<len(sys.argv) and not sys.argv[arg_i].startswith('--') else 0.25
+        f=OnlineFollower(notes, 70.0, fps, measurement_gain=gain)
+        print('scenario 2 (start@32, restart 48->40 at t=%.1f), gain=%.2f' % (t_cut, gain))
         print('    t   true    raw    pos  conf  D@true D@raw  level')
         for i in range(len(T2)):
             st=f.process(F2['chroma'][i], float(F2['flux'][i]), float(F2['level_db'][i]), t=T2[i])
@@ -78,7 +79,7 @@ if __name__=='__main__':
         print('tempo-varying frames with |err|>300ms:', len(bad), 'of', A1.sum())
         for i in bad[::10][:40]: print('  t=%.2f true %.2f raw %.2f pos %.2f conf %.2f err %+.0f ms' % (T1[i], TR1[i], raw[i], p[i], conf[i], e[i]))
     else:
-        print('%-46s| tempo-var med p95 bias | restart before after reanchor | real med p95 bias' % 'config')
-        for ow,prior,gain in itertools.product((1.0,),(0.5,),(0.25,0.5,1.0)):
+        print('%-34s| tempo-var med p95 bias | restart before after reanchor | real med p95 bias' % 'config')
+        for ow,gain in itertools.product((0.5,1.0),(0.25,0.5,1.0)):
             m1_,mb,ma,re,m3=evaluate(onset_weight=ow, measurement_gain=gain)
-            print('onset %.0f prior %.1f gain %.2f                    | %5.0f %5.0f %+5.0f | %5.0f %5.0f %5.2fs | %5.0f %5.0f %+5.0f' % (ow,prior,gain,*m1_,mb[0],ma[0],re,*m3))
+            print('onset %.1f gain %.2f               | %5.0f %5.0f %+5.0f | %5.0f %5.0f %5.2fs | %5.0f %5.0f %+5.0f' % (ow,gain,*m1_,mb[0],ma[0],re,*m3))
