@@ -101,6 +101,7 @@ class StateServer:
         self._rest_since: float | None = None
         self._last_follow_pos = 0.0
         self.follow_mode = "off"  # off / waiting / playing
+        self.sync_mode = "wait"  # wait: バイオリンを待って入る(追従) / ensemble: 前奏から鳴らしてテンポを合わせる(合奏)
         self._setup_follower()
         if self.analysis is not None:
             self.analysis.listeners.append(self._on_frame)
@@ -121,6 +122,18 @@ class StateServer:
         fps = self.analysis.sr / self.analysis.hop
         self.follower = OnlineFollower(notes, self.player.score.score_bpm, fps, local_beats=self.follow_settings.get("local_beats"))
         self.follower.set_base_tempo(self.player.score.score_bpm * getattr(self, '_base_rate', 1.0))
+
+    def _start_ensemble(self) -> None:
+        p = self.player
+        p.stop()
+        start = float(p.position)
+        if self.follower is not None:
+            self.follower.reset(start)
+        self._follow_rate = float(np.clip(self._base_rate, self.follow_settings["rate_min"], self.follow_settings["rate_max"]))
+        p.set_rate(self._follow_rate)
+        p.play()
+        self._last_seek_time = time.perf_counter()
+        self.follow_mode = "playing"
 
     def _rest_remaining_sec(self, position: float, p: MidiPlayer) -> float:
         """追従対象パートの現在の休符が終わるまでの秒数(楽譜テンポ換算)。休符でなければ 0。"""
@@ -161,6 +174,10 @@ class StateServer:
             self._stable_frames = 0
         self._last_follow_pos = st.position
         now = time.perf_counter()
+
+        if self.sync_mode == "ensemble":
+            self._ensemble_frame(st, p, cfg, fps, confident, now)
+            return
 
         # 無音の扱い: 休符でない無音が続いたら伴奏を止める(休符なら待つ)
         if st.active:
@@ -216,6 +233,37 @@ class StateServer:
             return
         self._disagree_frames = 0
         # 連続的なレート変調: テンポ比 + 位置誤差の比例項、変化率を制限(Phase 4 で先読みに置き換える)
+        target = st.tempo / max(p.score.score_bpm, 1e-6) + cfg["rate_gain"] * error
+        target = float(np.clip(target, cfg["rate_min"], cfg["rate_max"]))
+        self._follow_rate += float(np.clip(target - self._follow_rate, -0.01, 0.01))
+        p.set_rate(self._follow_rate)
+
+    def _ensemble_frame(self, st, p, cfg, fps, confident: bool, now: float) -> None:
+        """合奏モード: 伴奏は止めない。バイオリンが鳴っていなければ追従器を伴奏の位置に同期させ、
+        鳴って確信があれば伴奏のレートを奏者のテンポと位置誤差に合わせる。大きくずれたままなら位置を合わせ直す。"""
+        if not p.playing:
+            self.follow_mode = "waiting"
+            return
+        self.follow_mode = "playing"
+        if not confident:
+            # 前奏・休符・確信がない間: 追従器の位置は伴奏に合わせ、レートは目標テンポへ戻していく
+            self._disagree_frames = 0
+            if not st.active:
+                self.follower.sync_position(p.position)
+            target = float(np.clip(self._base_rate, cfg["rate_min"], cfg["rate_max"]))
+            self._follow_rate += float(np.clip(target - self._follow_rate, -0.005, 0.005))
+            p.set_rate(self._follow_rate)
+            return
+        error = st.position - p.position  # 拍。正なら伴奏が遅れている
+        if abs(error) > cfg["seek_threshold_beats"]:
+            self._disagree_frames += 1
+            if self._disagree_frames >= cfg["seek_wait_sec"] * fps and now - self._last_seek_time >= cfg["seek_refractory_sec"]:
+                p.seek(st.position)  # 合奏では止めずに位置を合わせ直す
+                self._last_seek_time = now
+                self._seek_count += 1
+                self._disagree_frames = 0
+            return
+        self._disagree_frames = 0
         target = st.tempo / max(p.score.score_bpm, 1e-6) + cfg["rate_gain"] * error
         target = float(np.clip(target, cfg["rate_min"], cfg["rate_max"]))
         self._follow_rate += float(np.clip(target - self._follow_rate, -0.01, 0.01))
@@ -317,7 +365,7 @@ class StateServer:
             st["audio"] = self.analysis.status.to_dict()
         if self.follower is not None:
             st["follow"] = {**self.follower.current.to_dict(), "enabled": self.follow_enabled, "seeks": self._seek_count,
-                            "mode": self.follow_mode if self.follow_enabled else "off"}
+                            "mode": self.follow_mode if self.follow_enabled else "off", "sync_mode": self.sync_mode}
         return st
 
     def songs_message(self) -> dict:
@@ -352,7 +400,10 @@ class StateServer:
         cmd = msg.get("cmd")
         p = self.player
         if cmd == "play":
-            if self.follow_enabled:
+            if self.follow_enabled and self.sync_mode == "ensemble":
+                # 合奏: 今の位置(曲頭または譜面クリックの位置)から前奏を含めて鳴らし始める
+                self._start_ensemble()
+            elif self.follow_enabled:
                 # 追従中は _on_frame の確実性ゲートだけが再生を開始できる。
                 p.stop()
                 self.follow_mode = "waiting"
@@ -365,7 +416,12 @@ class StateServer:
             p.seek(0.0)
         elif cmd == "seek":
             beat = float(msg.get("beat", 0.0))
-            if self.follow_enabled:
+            if self.follow_enabled and self.sync_mode == "ensemble":
+                # 合奏中の譜面クリック = そこから鳴らし直す
+                p.stop()
+                p.seek(beat)
+                self._start_ensemble()
+            elif self.follow_enabled:
                 # 追従 ON 中の譜面クリック = ここから弾く(追従器の位置を置き、伴奏は確実になってから入る)
                 if self.follower is not None:
                     self.follower.reset(beat)
@@ -393,7 +449,26 @@ class StateServer:
             return self.sessions_message() if not msg.get("on") else None
         elif cmd == "sessions":
             return self.sessions_message()
+        elif cmd == "ensemble":
+            # 合奏モードの開始/終了。開始すると前奏からすぐ鳴る
+            on = bool(msg.get("on", False))
+            self.follow_enabled = on
+            self.sync_mode = "ensemble" if on else "wait"
+            self._stable_frames = 0
+            self._disagree_frames = 0
+            self._silence_since = None
+            if on:
+                self._base_rate = float(p.rate)
+                if self.follower is not None:
+                    self.follower.set_base_tempo(p.score.score_bpm * self._base_rate)
+                self._start_ensemble()
+            else:
+                p.stop()
+                p.set_rate(1.0)
+                self._follow_rate = 1.0
+                self.follow_mode = "off"
         elif cmd == "follow":
+            self.sync_mode = "wait"
             self.follow_enabled = bool(msg.get("on", False))
             self._stable_frames = 0
             self._disagree_frames = 0

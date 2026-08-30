@@ -75,6 +75,21 @@ class ReliabilityTests(unittest.TestCase):
         self.assertFalse(player.playing)
         self.assertEqual(server.follow_mode, "waiting")
 
+    def test_ensemble_mode_starts_intro_immediately(self) -> None:
+        player = FakePlayer()
+        player.position = 0.0
+        player.seek = lambda beat: setattr(player, "position", beat)
+        server = StateServer(player, [], None, ())
+
+        server._handle_command({"cmd": "ensemble", "on": True})
+        self.assertTrue(player.playing)
+        self.assertEqual(server.sync_mode, "ensemble")
+        self.assertEqual(server.follow_mode, "playing")
+
+        server._handle_command({"cmd": "ensemble", "on": False})
+        self.assertFalse(player.playing)
+        self.assertEqual(server.sync_mode, "wait")
+
     def test_realtime_audio_queue_drops_oldest_blocks(self) -> None:
         engine = AnalysisEngine(sr=48000, n_fft=4096, hop=512)
         engine._source = SimpleNamespace(blocking=False)

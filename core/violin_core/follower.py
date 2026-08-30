@@ -205,6 +205,13 @@ class OnlineFollower:
 
     # ---- 公開 ----
 
+    def sync_position(self, beat: float) -> None:
+        """位置だけを外から合わせる(合奏モードでバイオリンが鳴っていない間、伴奏の位置に追随させる)。
+        累積コストは保つので、鳴り始めたら近くから追従を再開できる。"""
+        with self._lock:
+            self.state.position = float(beat)
+            self.state.raw_position = float(beat)
+
     def set_base_tempo(self, bpm: float) -> None:
         """想定テンポを変える(追従 ON 中のレートスライダー)。推定中のテンポも範囲内に収める。"""
         with self._lock:

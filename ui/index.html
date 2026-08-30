@@ -13,6 +13,7 @@
       <button id="btn-stop">■ 停止</button>
       <button id="btn-reset">⏮ 最初から</button>
       <label title="通常再生ではテンポの倍率。追従 ON 中は「このくらいで弾く」という目標テンポ(追従器の初期テンポと推定範囲の中心)">レート <input id="rate" type="range" min="0.5" max="1.5" step="0.01" value="1" /> <span id="rate-value">1.00</span></label>
+      <button id="btn-ensemble" title="合奏: 今の位置からピアノが前奏を含めて鳴り始め、バイオリンが入ったらそのテンポに合わせる(通しで弾く前提)">♪ 合奏 OFF</button>
       <button id="btn-follow" title="演奏に伴奏を追従させる。追従 ON 中に譜面をクリックすると、そこから弾く位置になる(通しで弾く前提。弾き直しは ±4 小節まで)">◎ 追従 OFF</button>
       <button id="btn-metronome" title="拍ごとにクリックを鳴らす(小節頭はアクセント)">♩ メトロノーム OFF</button>
       <label title="伴奏の音量">🔊 <input id="volume" type="range" min="0" max="1" step="0.01" value="1" /></label>

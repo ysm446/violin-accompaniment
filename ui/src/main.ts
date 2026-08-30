@@ -20,6 +20,7 @@ interface State {
   metronome_volume?: number;
   audio?: AudioStatus;
   follow?: {
+    sync_mode?: string;
     position: number; tempo: number; confidence: number; raw_position: number;
     active: boolean; lost: boolean; in_rest: boolean; enabled: boolean; mode: string;
     uniqueness: number; candidates: number;
@@ -186,6 +187,8 @@ function connect(): void {
 
 const followBtn = $<HTMLButtonElement>("btn-follow");
 let followOn = false;
+const ensembleBtn = $<HTMLButtonElement>("btn-ensemble");
+let ensembleOn = false;
 const metronomeBtn = $<HTMLButtonElement>("btn-metronome");
 let metronomeOn = false;
 const volumeInput = $<HTMLInputElement>("volume");
@@ -221,13 +224,19 @@ function tick(): void {
   if (latest) audioPanel.update(latest.audio);
   if (latest && cursorMap.length > 0) {
     const f = latest.follow;
-    const enabled = !!f?.enabled;
+    const ens = !!f?.enabled && f?.sync_mode === "ensemble";
+    const enabled = !!f?.enabled && !ens;
+    if (ens !== ensembleOn) {
+      ensembleOn = ens;
+      ensembleBtn.textContent = ens ? "♪ 合奏 ON" : "♪ 合奏 OFF";
+      ensembleBtn.classList.toggle("on", ens);
+    }
     if (enabled !== followOn) {
       followOn = enabled;
       followBtn.textContent = enabled ? "◎ 追従 ON" : "◎ 追従 OFF";
       followBtn.classList.toggle("on", enabled);
-      playhead.classList.toggle("follow", enabled);
     }
+    playhead.classList.toggle("follow", enabled || ens);
     if (latest.score_bpm) {
       const v = parseFloat(rateInput.value);
       rateValue.textContent = `${v.toFixed(2)} (♩=${Math.round(v * latest.score_bpm)})`;
@@ -247,7 +256,7 @@ function tick(): void {
     if (f?.mode === "waiting") {
       if (f.lost) modeText = f.candidates > 1 ? `聞いています(候補 ${f.candidates} 箇所)` : "待機中(音を待っています)";
       else modeText = "位置を確認中";
-    } else if (f?.mode === "playing") modeText = "追従中";
+    } else if (f?.mode === "playing") modeText = ens ? (f.active ? "合奏中(テンポ追従)" : "合奏中(前奏/休符)") : "追従中";
     const followText = f && enabled ? `  ${modeText} ${f.position.toFixed(1)} (♩=${f.tempo.toFixed(0)}, 確信 ${Math.round(f.confidence * 100)}% 一意 ${Math.round(f.uniqueness * 100)}%)` : "";
     infoEl.textContent = `拍 ${latest.position.toFixed(2)} / ${latest.length.toFixed(0)}  小節 ${measure}  ♩=${latest.tempo.toFixed(1)}  ${latest.playing ? "再生中" : "停止"}${followText}`;
   }
@@ -255,6 +264,7 @@ function tick(): void {
 }
 
 followBtn.onclick = () => send({ cmd: "follow", on: !followOn });
+ensembleBtn.onclick = () => send({ cmd: "ensemble", on: !ensembleOn });
 metronomeBtn.onclick = () => send({ cmd: "metronome", on: !metronomeOn });
 volumeInput.oninput = () => {
   const v = parseFloat(volumeInput.value);
@@ -269,7 +279,7 @@ metronomeVolumeInput.oninput = () => {
 
 $("btn-play").onclick = () => send({ cmd: "play" });
 $("btn-stop").onclick = () => send({ cmd: "stop" });
-$("btn-reset").onclick = () => send({ cmd: followOn ? "follow_reset" : "reset" });
+$("btn-reset").onclick = () => send({ cmd: followOn || ensembleOn ? "follow_reset" : "reset" });
 songSelect.onchange = () => selectSong(songSelect.value);
 rateInput.oninput = () => {
   const v = parseFloat(rateInput.value);
