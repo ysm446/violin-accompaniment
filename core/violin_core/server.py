@@ -92,6 +92,7 @@ class StateServer:
             "rate_max": 1.6,
             "silence_stop_sec": 1.0,  # 休符でない無音がこの時間続いたら伴奏を止める
             "fade_in_sec": 1.0,  # 追従モードで伴奏を始めるときのフェードイン
+            "tempo_wait_sec": 2.0,  # テンポの実測が立つまで伴奏の開始をこの時間まで待つ
             "fade_out_sec": 0.3,  # 追従モードで伴奏を止めるときのフェードアウト
             "rest_grace_sec": 1.0,  # 休符中は休符の長さ + この時間まで待つ
         }
@@ -147,6 +148,11 @@ class StateServer:
         fps = self.analysis.sr / self.analysis.hop if self.analysis else 94.0
         confident = st.active and st.confidence >= cfg["confidence_min"]
         certain = confident and not st.lost and st.uniqueness >= cfg["uniqueness_min"]
+        # テンポは奏者の実測から自動で決める: 推定が立つまで(最大 tempo_wait_sec)は待ってから伴奏に入る
+        if certain and not st.tempo_ready and self._stable_frames < (cfg["start_wait_sec"] + cfg["tempo_wait_sec"]) * fps:
+            certain_now = self._stable_frames < cfg["start_wait_sec"] * fps  # 安定は数えるが開始はしない
+        else:
+            certain_now = True
         # 安定判定: 確実で、かつ位置が直前の予測から 1 拍以上飛んでいないこと
         if certain and abs(st.position - self._last_follow_pos) < 1.0 + abs(st.tempo) / 60.0 * 0.2:
             self._stable_frames += 1
@@ -176,7 +182,7 @@ class StateServer:
         if not p.playing:
             self.follow_mode = "waiting"
             # 弾き始めてしばらく安定してから伴奏を出す
-            if self._stable_frames >= cfg["start_wait_sec"] * fps:
+            if self._stable_frames >= cfg["start_wait_sec"] * fps and certain_now:
                 p.seek(st.position)
                 # 開始時のレートは推定テンポから(ゆっくり弾いているなら最初からゆっくり入る)
                 self._follow_rate = float(np.clip(st.tempo / max(p.score.score_bpm, 1e-6), cfg["rate_min"], cfg["rate_max"]))

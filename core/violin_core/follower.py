@@ -34,6 +34,7 @@ class FollowState:
     in_rest: bool = False  # 現在位置が楽譜上の休符
     uniqueness: float = 0.0  # 0..1。楽譜上の別の場所(2 拍以上離れた列)より現在位置がどれだけ良いか
     candidates: int = 0  # 再探索中の候補(離れた場所)の数。1 なら一意
+    tempo_ready: bool = False  # 奏者のテンポを実測から推定できた(伴奏開始の条件)
     alternates: list = None  # 副仮説 [{position, lead}](主仮説より良い状態が続いている秒数つき)
     frames: int = 0
 
@@ -48,6 +49,7 @@ class FollowState:
             "in_rest": self.in_rest,
             "uniqueness": round(self.uniqueness, 2),
             "candidates": self.candidates,
+            "tempo_ready": self.tempo_ready,
             "alternates": [{"position": round(a["pos"], 2), "lead": round(a["lead"], 2)} for a in (self.alternates or [])],
         }
 
@@ -515,7 +517,10 @@ class OnlineFollower:
                     if tt[-1] - tt[0] > 1.0:
                         slope = float(np.polyfit(tt, bb, 1)[0])  # 拍/秒
                         bpm = float(np.clip(slope * 60.0, self.base_bpm * self.tempo_range[0], self.base_bpm * self.tempo_range[1]))
-                        st.tempo = (1.0 - self.tempo_gain) * st.tempo + self.tempo_gain * bpm
+                        # 実測が無いうち(曲頭・再アンカー直後)は実測をほぼそのまま採り、実績がつくほど緩やかに追従する
+                        gain = self.tempo_gain if st.tempo_ready else 0.7
+                        st.tempo = (1.0 - gain) * st.tempo + gain * bpm
+                        st.tempo_ready = True
                 # 位置: 予測に観測を混ぜる。大きくずれていたらスナップ
                 if abs(raw - predicted) > self.snap_beats or snapped is not None:
                     st.position = raw
@@ -535,6 +540,7 @@ class OnlineFollower:
                     self._history = [(now, raw)]
                     self._plateau_lo = raw
                     st.lost = False
+                    st.tempo_ready = False
                 self._silence_start = None
                 self._rest_end = None
                 st.in_rest = False
