@@ -297,6 +297,8 @@ class StateServer:
             "length": p.score.length_beats,
             "song": self.current,
             "metronome": bool(getattr(self.player, "metronome", False)),
+            "volume": float(getattr(self.player, "volume", 1.0)),
+            "metronome_volume": float(getattr(self.player, "metronome_volume", 0.8)),
             "time": time.time(),  # 送信時刻(遅延計測用)
         }
         if self.analysis is not None:
@@ -380,6 +382,10 @@ class StateServer:
             p.seek(0.0)
         elif cmd == "metronome":
             p.metronome = bool(msg.get("on", False))
+        elif cmd == "volume":
+            p.set_volume(float(msg.get("value", 1.0)))
+        elif cmd == "metronome_volume":
+            p.metronome_volume = max(0.0, min(1.0, float(msg.get("value", 0.8))))
         elif cmd == "analyze":
             self._analyze_async(str(msg.get("session", "")))
         return None

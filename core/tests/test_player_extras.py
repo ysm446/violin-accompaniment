@@ -102,6 +102,24 @@ class PlayerFadeAndMetronomeTests(unittest.TestCase):
         finally:
             player.close()
 
+    def test_volume_scales_expression_and_click_velocity(self) -> None:
+        fake = FakeMidiOut()
+        player = make_player(MidiScore(length_beats=2.0), fake)
+        try:
+            player.set_volume(0.5)
+            player.metronome = True
+            player.metronome_volume = 0.5
+            player.play()
+            time.sleep(0.6)
+            with fake.lock:
+                expr = [m[2] for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[1] == 11]
+                clicks = [m for m in fake.messages if m[0] == 0x99 and m[2] > 0]
+            self.assertEqual(expr[-1], 64)
+            self.assertTrue(clicks)
+            self.assertEqual(clicks[0][2], 64)
+        finally:
+            player.close()
+
     def test_metronome_off_sends_no_clicks(self) -> None:
         fake = FakeMidiOut()
         player = make_player(MidiScore(length_beats=2.0), fake)

@@ -1,7 +1,7 @@
 # progress — 進捗と注意点
 
 作成日時: 2026-08-30 02:52
-更新日時: 2026-08-30 14:40
+更新日時: 2026-08-30 14:55
 
 ## 現在の状態
 
@@ -58,6 +58,7 @@ Phase 3 完了(オンライン追従 + 伴奏同期の最初の形)。「弾く�
 - 2026-08-30: 楽譜を 3 曲追加(`merry_christmas_mr_lawrence` / `energy_flow` / `vivaldi_summer_3`)。いずれも Violin / Piano / Piano の 3 トラック、480 ppq。ユーザーが置いたファイルを `score.mscz` / `score.mxl` / `score.mid` に改名し `song.json` を追加した。
 
 - 2026-08-30: ユーザーの要望でフェードインとメトロノーム。`player.py` に CC11 による gain のフェード(`play(fade_in_sec)` / `fade_stop(sec)`、再生スレッドがフェード完了時に stop)とメトロノーム(`metronome` フラグ、`MidiScore.clicks()` の拍列を GM パーカッション ch10 の Wood Block で鳴らす)。`midi_score.py` が `time_signature` を `meters` に読む。server: `follow_settings` に `fade_in_sec` 1.0 / `fade_out_sec` 0.3、コマンド `{"cmd":"metronome","on":bool}`、state に `metronome`。UI にトグルボタン。テスト `tests/test_player_extras.py`(拍列・フェード・クリック)。
+  - 音量: `player.set_volume`(CC11 = gain × volume)と `metronome_volume`(ベロシティに掛ける)。コマンド `volume` / `metronome_volume`、state に同名。UI のスライダーは localStorage に記憶し、接続のたびに core へ送る(core 側は再起動で既定値に戻るため)。
   - 注意: GS Wavetable は CC11 に対応している前提。楽譜の MIDI は CC7 をトラック先頭で送るので CC7 は使えない。
 
 ## 未完了

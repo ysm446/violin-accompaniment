@@ -55,8 +55,10 @@ class MidiPlayer:
         self._fade_rate = 0.0
         self._stop_after_fade = False
         self._last_sent_expr = -1
+        self._volume = 1.0  # 伴奏の音量 0..1(フェードの gain と掛け合わせて CC11 に送る)
         # メトロノーム: 拍ごとにパーカッションを鳴らす(小節頭はアクセント)
         self.metronome = False
+        self.metronome_volume = 0.8  # クリックの音量 0..1(ベロシティに掛ける)
         self._clicks = score.clicks()
         self._next_click = 0
         self._stop_flag = threading.Event()
@@ -118,8 +120,16 @@ class MidiPlayer:
     def gain(self) -> float:
         return self._gain
 
+    @property
+    def volume(self) -> float:
+        return self._volume
+
+    def set_volume(self, volume: float) -> None:
+        self._volume = max(0.0, min(1.0, float(volume)))
+        self._send_expression()
+
     def _send_expression(self, force: bool = False) -> None:
-        value = int(round(max(0.0, min(1.0, self._gain)) * 127))
+        value = int(round(max(0.0, min(1.0, self._gain * self._volume)) * 127))
         if not force and value == self._last_sent_expr:
             return
         self._last_sent_expr = value
@@ -221,10 +231,11 @@ class MidiPlayer:
                 while self._next_click < len(self._clicks) and self._clicks[self._next_click].beat <= self._position:
                     clicks.append(self._clicks[self._next_click])
                     self._next_click += 1
-                if self.metronome:
+                if self.metronome and self.metronome_volume > 0:
                     for c in clicks:
                         note = CLICK_NOTE_ACCENT if c.accent else CLICK_NOTE
-                        to_send.append([0x90 | CLICK_CHANNEL, note, 110 if c.accent else 80])
+                        vel = int(round((127 if c.accent else 95) * max(0.0, min(1.0, self.metronome_volume))))
+                        to_send.append([0x90 | CLICK_CHANNEL, note, max(1, vel)])
                         to_send.append([0x80 | CLICK_CHANNEL, note, 0])
                 if self._position >= self.score.length_beats:
                     self._playing = False

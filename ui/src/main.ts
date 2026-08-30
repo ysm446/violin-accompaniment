@@ -15,6 +15,8 @@ interface State {
   length: number;
   song: string | null;
   metronome?: boolean;
+  volume?: number;
+  metronome_volume?: number;
   audio?: AudioStatus;
   follow?: {
     position: number; tempo: number; confidence: number; raw_position: number;
@@ -126,6 +128,7 @@ function onSongs(list: Song[], current: string | null): void {
     opt.textContent = s.name;
     songSelect.appendChild(opt);
   }
+  sendVolumes(); // 接続(再接続)のたびに前回の音量を core に反映する
   let wanted = current;
   const last = recallSong();
   if (last && songs.some((s) => s.id === last) && last !== current) {
@@ -184,6 +187,34 @@ const followBtn = $<HTMLButtonElement>("btn-follow");
 let followOn = false;
 const metronomeBtn = $<HTMLButtonElement>("btn-metronome");
 let metronomeOn = false;
+const volumeInput = $<HTMLInputElement>("volume");
+const metronomeVolumeInput = $<HTMLInputElement>("metronome-volume");
+const VOLUME_KEY = "violin-accompaniment.volume";
+const METRONOME_VOLUME_KEY = "violin-accompaniment.metronome_volume";
+
+function recallNumber(key: string, fallback: number): number {
+  try {
+    const v = parseFloat(localStorage.getItem(key) ?? "");
+    return Number.isFinite(v) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function rememberNumber(key: string, value: number): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    /* localStorage が使えない環境では無視 */
+  }
+}
+
+function sendVolumes(): void {
+  send({ cmd: "volume", value: parseFloat(volumeInput.value) });
+  send({ cmd: "metronome_volume", value: parseFloat(metronomeVolumeInput.value) });
+}
+volumeInput.value = String(recallNumber(VOLUME_KEY, 1));
+metronomeVolumeInput.value = String(recallNumber(METRONOME_VOLUME_KEY, 0.8));
 
 function tick(): void {
   if (latest) audioPanel.update(latest.audio);
@@ -220,6 +251,16 @@ function tick(): void {
 
 followBtn.onclick = () => send({ cmd: "follow", on: !followOn });
 metronomeBtn.onclick = () => send({ cmd: "metronome", on: !metronomeOn });
+volumeInput.oninput = () => {
+  const v = parseFloat(volumeInput.value);
+  rememberNumber(VOLUME_KEY, v);
+  send({ cmd: "volume", value: v });
+};
+metronomeVolumeInput.oninput = () => {
+  const v = parseFloat(metronomeVolumeInput.value);
+  rememberNumber(METRONOME_VOLUME_KEY, v);
+  send({ cmd: "metronome_volume", value: v });
+};
 
 $("btn-play").onclick = () => send({ cmd: "play" });
 $("btn-stop").onclick = () => send({ cmd: "stop" });
