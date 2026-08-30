@@ -1,9 +1,14 @@
-"""オンライン楽譜追従(Phase 3)。
+"""オンライン楽譜追従(Phase 3、同音連打対応は Phase 5)。
 
 align.py の subsequence DTW の行再帰は因果的(前の行と現在のコストだけで次の行が決まる)なので、
 それをフレームごとに 1 行ずつ進める。参照全列(数千)に対するベクトル演算なので 1 フレーム数十 µs。
 
-出力は共有インターフェースの 3 値 {position, tempo, confidence}。
+位置の推定は「予測(位置 + テンポ)」と「観測」の混合。観測は DTW の累積コストがほぼ最小の列の集合
+(同点区間)で、予測が区間内なら補正せず、外なら近い端へ引き寄せる。同じ音が続く区間(同音連打)では
+DTW は位置を決められないので、テンポと発火カウント(発火 1 回 = 次の音符の頭)で進める。
+無音が続けば見失い(lost)として楽譜全体から再探索し、候補が 1 箇所に絞れてから再アンカーする。
+
+出力は共有インターフェースの 3 値 {position, tempo, confidence}(+ raw_position / lost / uniqueness など)。
 """
 
 from __future__ import annotations
@@ -56,15 +61,28 @@ class OnlineFollower:
         onset_threshold: float = 0.3,
         onset_rise_db: float = 6.0,
         onset_chroma_scale: float = 0.5,
+        onset_bonus: float = 1.0,
+        onset_hold: tuple[float, ...] = (0.7, 0.4),
+        transient_damp: float = 0.5,
+        fire_snap: bool = True,
+        snap_back_frac: float = 0.3,
+        block_gap_beats: float = 0.3,
+        snap_min_interval: float = 0.5,
+        snap_min_strength: float = 0.5,
+        tempo_range: tuple[float, float] = (0.6, 1.5),
+        tempo_gain: float = 0.2,
         skip_penalty: float = 0.1,
         window_back: float = 1.5,
         window_fwd: float = 3.0,
         near_eps: float = 0.05,
         jump_margin: float = 6.0,
         jump_dwell_frames: int = 6,
+        far_jump_sec: float = 1.0,
+        far_deficit_min: float = 2.0,
         lost_after_sec: float = 1.0,
         lost_listen_sec: float = 1.0,
         lost_max_listen_sec: float = 2.5,
+        lost_unique_frames: int = 20,
         distinct_beats: float = 2.0,
         uniqueness_scale: float = 6.0,
         confidence_floor: float = 0.2,
@@ -84,42 +102,60 @@ class OnlineFollower:
         self.ref = reference_chroma(notes, length, ref_step)
         self.ref_sil = np.linalg.norm(self.ref, axis=1) < 1e-6
         base = reference_onsets(notes, len(self.ref), ref_step)
+        self.ref_head = base.astype(np.float32)  # 音符の頭の列そのもの(報酬用)
         # ±2 刻み(1/8 拍)の三角パルスに広げる: ジッタで 1〜2 刻みずれても「一致」とみなす
         self.ref_onset = np.maximum.reduce([
             np.roll(base, k) * (1.0 - 0.3 * abs(k)) for k in (-2, -1, 0, 1, 2)
         ]).astype(np.float32)
         self.ref_beats = np.arange(len(self.ref)) * ref_step
+        # 各列について、参照 chroma が同じ列が連続するブロック(同じ音が続く区間・同音連打)の最後の列。
+        # スタッカートや MIDI のゲートで音符の間に短い無音列(≤ block_gap_beats)が挟まっていても、
+        # 前後が同じ音高なら同じブロックとして橋渡しする(実演奏の連打はスタッカートが多い)
+        n_ref = len(self.ref)
+        same = np.zeros(n_ref - 1, dtype=bool)  # same[k]: 列 k と k+1 が同じブロック
+        max_gap = int(round(block_gap_beats / ref_step))
+        last_sound = -1  # 直前の有音列
+        for k in range(n_ref):
+            if self.ref_sil[k]:
+                continue
+            if last_sound >= 0 and k - last_sound - 1 <= max_gap and np.allclose(self.ref[k], self.ref[last_sound]):
+                same[last_sound:k] = True
+            last_sound = k
+        self._block_end = np.arange(n_ref)
+        for k in range(len(self.ref) - 2, -1, -1):
+            if same[k]:
+                self._block_end[k] = self._block_end[k + 1]
+        self._block_start = np.arange(len(self.ref))
+        for k in range(1, len(self.ref)):
+            if same[k - 1]:
+                self._block_start[k] = self._block_start[k - 1]
+        self._head_cols = np.nonzero(self.ref_head > 0)[0]
         self.length_beats = length
-        # 同音連打の区間: 連続する同じ音高の音符(間に休符なし)。DTW は区間内の位置を決められないので
-        # オンセットの発火で音符を数えて進める。
-        # MIDI の音価は次の音の開始より少し短い(ゲート)ので、「終わり」は次の音符の開始とする
-        order = sorted(range(len(notes)), key=lambda i: notes[i].beat)
-        starts = np.array([notes[i].beat for i in order])
-        ends = np.array([notes[i].beat + notes[i].duration for i in order])
-        for k in range(len(order) - 1):
-            if starts[k + 1] > starts[k]:
-                ends[k] = max(ends[k], starts[k + 1])
-        self._note_starts = starts
-        self._note_ends = ends
-        self._run_next: dict[int, int] = {}  # (order 上の) 音符 index → 同音連打で次の音符 index
-        for k in range(len(order) - 1):
-            na, nb = notes[order[k]], notes[order[k + 1]]
-            gap = nb.beat - (na.beat + na.duration)
-            if nb.midi == na.midi and nb.beat > na.beat and gap < 0.26:
-                self._run_next[k] = k + 1
         self.onset_weight = onset_weight
         self.onset_threshold = onset_threshold
         self.onset_rise_db = onset_rise_db
         self.onset_chroma_scale = onset_chroma_scale
+        self.onset_bonus = onset_bonus
+        self.onset_hold = tuple(onset_hold)
+        self.transient_damp = transient_damp
+        self.fire_snap = fire_snap
+        self.snap_back_frac = snap_back_frac
+        self.snap_min_interval = snap_min_interval
+        self.snap_min_strength = snap_min_strength
+        self.tempo_range = tempo_range
+        self.tempo_gain = tempo_gain
         self.skip_penalty = skip_penalty
         self.window_back = window_back
         self.window_fwd = window_fwd
         self.near_eps = near_eps
         self.jump_margin = jump_margin
         self.jump_dwell_frames = jump_dwell_frames
+        self.far_jump_sec = far_jump_sec
+        self.far_deficit_min = far_deficit_min
         self.lost_after_sec = lost_after_sec
         self.lost_listen_sec = lost_listen_sec
         self.lost_max_listen_sec = lost_max_listen_sec
+        self.lost_unique_frames = lost_unique_frames
         self.distinct_beats = distinct_beats
         self.uniqueness_scale = uniqueness_scale
         self.restart_penalty = restart_penalty
@@ -138,8 +174,9 @@ class OnlineFollower:
     def reset(self, position: float = 0.0) -> None:
         with self._lock:
             self.D = np.zeros(len(self.ref), dtype=np.float32)
+            self.Du = np.zeros(len(self.ref), dtype=np.float32)
             self.state = FollowState(position=position, tempo=self.score_bpm, raw_position=position)
-            self._history: list[tuple[float, float]] = []  # (時刻, 生の位置)
+            self._history: list[tuple[float, float]] = []  # (時刻, 拍): 同点区間の下端が上がったイベント
             self._match_ema = 1.0
             self._last_time: float | None = None
             self._flux_scale = 1.0
@@ -147,9 +184,15 @@ class OnlineFollower:
             self._chroma_hist: list[np.ndarray] = []
             self._onset_prev = 0.0
             self._refractory = 0
-            self._on_hold = 0.0
-            self._last_count_time: float | None = None
+            self._onset_strength = 0.0
+            self._hold_left: list[float] = []
+            self._plateau_lo: float | None = None  # 同点区間の下端(テンポ推定のイベント検出用)
+            self._last_snap_time: float | None = None
+            self._rest_end: float | None = None  # 無音が楽譜の休符にかかっているとき、その休符の終わり(拍)
             self._jump_frames = 0
+            self._far_since: float | None = None
+            self._unique_frames = 0
+            self._far_deficit: list[float] = []
             self._silence_start: float | None = None
             self._last_fired = 0.0
             self._active_frames = 0
@@ -159,7 +202,7 @@ class OnlineFollower:
         """オンセット強度 0..1。スペクトラルフラックスはビブラートで常に高くなるので使わない。
         (a) レベルの急上昇(直近 3 フレームの最小からの上昇、同音連打の再アタック)と
         (b) chroma の変化(3 フレーム前とのコサイン距離、音高変化)の大きい方を取り、
-        閾値の立ち上がりエッジで 1 回だけ発火(不応期 3 フレーム)、次のフレームまで半分保持。"""
+        閾値の立ち上がりエッジで 1 回だけ発火(不応期 3 フレーム)、onset_hold の比率で数フレーム減衰保持。"""
         self._level_hist.append(level_db)
         self._chroma_hist.append(chroma)
         if len(self._level_hist) > 4:
@@ -172,6 +215,7 @@ class OnlineFollower:
         if len(self._chroma_hist) >= 4 and chroma.any() and self._chroma_hist[0].any():
             change = (1.0 - float(chroma @ self._chroma_hist[0])) / self.onset_chroma_scale
         strength = float(np.clip(max(rise, change), 0.0, 1.0))
+        self._onset_strength = strength  # 閾値前の連続値(過渡の減衰に使う)
         fired = 0.0
         if self._refractory > 0:
             self._refractory -= 1
@@ -179,9 +223,10 @@ class OnlineFollower:
             fired = strength
             self._refractory = 3
         self._onset_prev = strength
-        on = max(fired, self._on_hold)
-        self._on_hold = fired * 0.5
-        return on
+        if fired > 0:
+            self._hold_left = [fired * h for h in self.onset_hold]
+            return fired
+        return self._hold_left.pop(0) if self._hold_left else 0.0
 
     def _clusters(self, cols: np.ndarray) -> list[tuple[int, int]]:
         """列の集合を、distinct_beats 以上離れたら別の場所とみなして分ける。"""
@@ -199,26 +244,27 @@ class OnlineFollower:
         out.append((start, prev))
         return out
 
-    def _count_repeated(self, raw: float, predicted: float, now: float, tempo: float) -> float:
-        """位置が同音連打の区間内で、直前のカウントから期待音価の 4 割以上経っていれば次の音符の頭へ。"""
-        pos = max(raw, predicted)
-        inside = np.nonzero((self._note_starts <= pos + 1e-6) & (self._note_ends > pos))[0]
-        if len(inside) == 0:
-            return raw
-        i = int(inside[0])
-        nxt = self._run_next.get(i)
-        if nxt is None:
-            return raw
-        expected = (self._note_ends[i] - self._note_starts[i]) * 60.0 / max(tempo, 1e-6)
-        if self._last_count_time is not None and now - self._last_count_time < 0.4 * expected:
-            return raw
-        self._last_count_time = now
-        target = float(self._note_starts[nxt])
-        self.state.position = target
-        # DTW の累積コストにも反映: カウントした音符の頭を現在の最小に揃え、以降の観測がそこから続くようにする
-        jt = min(int(round(target / self.ref_step)), len(self.D) - 1)
-        self.D[jt] = float(self.D.min())
-        return target
+    def _snap_to_head(self, predicted: float, now: float, tempo: float) -> float | None:
+        """同音連打の中でオンセットが発火したら、予測位置の次の音符の頭へ進める(予測が頭のすぐ後ろなら
+        その頭に揃える)。DTW は同じ音が続く間は位置を決められず、発火の取りこぼしがあると DTW の
+        数え上げは恒久的に遅れるので、数え上げは予測位置を基準に前進専用で行う。"""
+        jp = min(max(int(round(predicted / self.ref_step)), 0), len(self.ref) - 1)
+        bs, be = int(self._block_start[jp]), int(self._block_end[jp])
+        heads = self._head_cols[(self._head_cols >= bs) & (self._head_cols <= be)]
+        if len(heads) < 2:
+            return None
+        hb = self.ref_beats[heads]
+        k = int(np.searchsorted(hb, predicted + 1e-9) - 1)
+        if k < 0:
+            return float(hb[0])
+        spacing = float(hb[k + 1] - hb[k]) if k + 1 < len(hb) else float(hb[k] - hb[k - 1])
+        if self._last_snap_time is not None and now - self._last_snap_time < self.snap_min_interval * spacing * 60.0 / max(tempo, 1e-6):
+            return None
+        if predicted - hb[k] < self.snap_back_frac * spacing:
+            return float(hb[k])
+        if k + 1 >= len(hb):
+            return None  # 連打の最後の音: 次は別の音なので chroma に任せる
+        return float(hb[k + 1])
 
     def process(self, chroma: np.ndarray, flux: float, level_db: float, t: float | None = None) -> FollowState:
         """1 フレーム分の特徴量を入れて状態を更新する。t は perf_counter 基準の時刻。"""
@@ -237,18 +283,45 @@ class OnlineFollower:
                 and float(chroma.max()) >= self.chroma_peak_min
             )
             # --- コスト行 ---
+            bonus = None
             if active:
                 c = 1.0 - self.ref @ chroma.astype(np.float32)
                 c[self.ref_sil] = 1.0
                 on = self._onset(chroma, level_db)
+                c_raw = c.copy()  # 減衰・報酬なしの素の証拠(一意性の判定用)
+                transient = max(on, self._onset_strength)
+                if transient > 0 and self.transient_damp > 0:
+                    # 発音の過渡(レベルや chroma が動いている間)は chroma が当てにならない。実演奏では
+                    # 過渡ごとに真の経路が 2〜3 損をし、隣に別の音を持つ別区間(過渡を迂回路で吸収できる)
+                    # に負ける。発火の閾値に届かない弱い過渡でも減衰させる
+                    c *= 1.0 - self.transient_damp * transient
                 fired_now = on > self._last_fired and on >= self.onset_threshold
                 self._last_fired = on
                 if self.onset_weight > 0:
-                    # 非対称: 楽譜のオンセットが音に無い → 重い。音の余分なオンセット(弓返し等)→ 軽い
+                    c_raw += self.onset_weight * (np.maximum(self.ref_onset - on, 0.0) + 0.3 * np.maximum(on - self.ref_onset, 0.0))
+                    # 毎フレームの非対称ペナルティ: 楽譜のオンセットが音に無い → 重い(頭が密な区間に音が
+                    # 停滞していると不一致)。音の余分なオンセット(弓返し等)→ 軽い。
                     c += self.onset_weight * (np.maximum(self.ref_onset - on, 0.0) + 0.3 * np.maximum(on - self.ref_onset, 0.0))
+                if self.onset_bonus > 0 and on > 0:
+                    # 発火中に前進ステップで音符の頭の列に「入った」ときの報酬(負の遷移コスト)。
+                    # ペナルティだけだと同音連打では境目を越えるほうが停滞(0)より高くつき、パスが最初の音符に
+                    # 張り付いて数秒遅れる。報酬で「発火に合わせた越境」を停滞より安くする。停滞には付けない
+                    # (付けると、いま居る音符の頭が毎回最小になって raw が 1 音戻る)。
+                    bonus = (self.onset_bonus * on) * self.ref_head
                 self._active_frames += 1
             else:
                 c = np.zeros(len(self.ref), dtype=np.float32)
+                c_raw = c
+            # --- 一意性判定用の累積コスト: 減衰・報酬を入れない(それらは追従の頑健さには効くが、
+            # 「楽譜上の他の場所より十分良いか」の証拠を弱める。伴奏の開始条件はこちらで測る)
+            pu = self.Du
+            u1 = np.empty_like(pu); u1[0] = np.inf; u1[1:] = pu[:-1]
+            u2 = np.empty_like(pu); u2[:2] = np.inf; u2[2:] = pu[:-2] + self.skip_penalty
+            bu = np.minimum(pu, np.minimum(u1, u2))
+            if self.restart_penalty > 0:
+                bu = np.minimum(bu, self.restart_penalty)
+            self.Du = c_raw + bu
+            self.Du -= self.Du.min()
             # --- DTW 行再帰: 停滞 / 対角 / 早送り ---
             prev = self.D
             cand1 = np.empty_like(prev)
@@ -257,6 +330,9 @@ class OnlineFollower:
             cand2 = np.empty_like(prev)
             cand2[:2] = np.inf
             cand2[2:] = prev[:-2] + self.skip_penalty
+            if bonus is not None:
+                cand1[1:] -= bonus[1:]
+                cand2[2:] -= bonus[2:]
             best_prev = np.minimum(prev, np.minimum(cand1, cand2))
             if self.restart_penalty > 0:
                 # どの列からでも新しいパスを始められる(弾き直し・途中からの開始への耐性)
@@ -266,8 +342,10 @@ class OnlineFollower:
             # --- 予測と観測 ---
             predicted = st.position + dt * st.tempo / 60.0
             if active:
-                # 観測: 予測位置の周りの窓で、累積コストがほぼ最小の列のうち予測に最も近いもの。
-                # 同じ音の連打(コストが一様)の中では予測テンポで進み、境目で補正される。
+                # 観測: 予測位置の周りの窓で、累積コストがほぼ最小の列の集合(同点区間)。
+                # 同じ音が続く間はコストが平坦で区間内の位置は決められないので、区間を「位置はこの範囲」
+                # という観測として扱う: 予測が区間内なら補正せず、外なら近い端に引き寄せる。
+                # (予測に最も近い列を点の観測にすると、観測が予測に引きずられて列境界の手前に固定される)
                 # 窓の外に大幅に良い列があれば(弾き直し・途中開始)そこへ再アンカーする。
                 lo = max(0, int((predicted - self.window_back) / self.ref_step))
                 hi = min(len(self.D), int((predicted + self.window_fwd) / self.ref_step) + 1)
@@ -277,6 +355,7 @@ class OnlineFollower:
                 gmin = float(self.D.min())
                 near = np.nonzero(win <= win.min() + self.near_eps)[0] + lo
                 j = int(near[np.argmin(np.abs(self.ref_beats[near] - predicted))])
+                point = False  # 観測が 1 点に決まった(再アンカー)か
                 if st.lost:
                     # 見失った後の音: 最初の 1 音だけでは同じ音高の列が楽譜中に多数同点で並ぶので、
                     # lost_listen_sec 聞いてから楽譜全体の最小コスト列を採る。ただし候補が楽譜上の複数の
@@ -286,59 +365,134 @@ class OnlineFollower:
                     clusters = self._clusters(cand)
                     st.candidates = len(clusters)
                     listened = self._jump_frames / self.fps
-                    if listened < self.lost_listen_sec or (len(clusters) > 1 and listened < self.lost_max_listen_sec):
+                    # 一意になっても数フレームは続くのを待つ(過渡の 1 フレームで他の候補が落ちただけのことがある)
+                    self._unique_frames = self._unique_frames + 1 if len(clusters) == 1 else 0
+                    unique = self._unique_frames >= self.lost_unique_frames
+                    if listened < self.lost_listen_sec or (not unique and listened < self.lost_max_listen_sec):
                         return FollowState(**st.__dict__)
-                    if len(clusters) > 1:
+                    if not unique:
                         # 十分聞いても曖昧: 直前の位置に近い候補を採る(確信度は低いまま)
                         j = int(cand[np.argmin(np.abs(self.ref_beats[cand] - st.position))])
                     else:
                         j = int(cand[len(cand) // 2])
                     self._jump_frames = 0
-                elif gmin + self.jump_margin < float(win.min()):
-                    # 窓外に大幅に良い列がある。数フレーム続いて初めてジャンプ(1 フレームの揺れで飛ばない)
-                    self._jump_frames += 1
-                    if self._jump_frames >= self.jump_dwell_frames:
-                        j = int(np.argmin(self.D))
-                        self._jump_frames = 0
+                    point = True
                 else:
-                    self._jump_frames = 0
-                raw = float(self.ref_beats[j])
-                # 同音連打の中なら、オンセットの発火で次の音符の頭へ進める
-                if fired_now and self._run_next:
-                    raw = self._count_repeated(raw, predicted, now, st.tempo)
-                match = float(c[j] if self.onset_weight == 0 else min(c[j], 1.0))
+                    # 窓外に良い列がある(弾き直し・誤追従)ときの再アンカー。飛ぶ条件は 2 つ:
+                    #  strong: 窓内の最小が全体最小より jump_margin 以上悪い状態が jump_dwell_frames 続いた
+                    #  long:   全体最小の列が現在位置から離れた場所にあり続けて far_jump_sec 経った
+                    #          (遠方の窓に同じ音名の別オクターブなど偶然コストの低い列が混じると strong に
+                    #          ならないまま誤った場所に留まるため)
+                    # どちらの場合も、候補が楽譜上の 1 箇所に絞れていればそこへ飛び、複数の場所に分かれて
+                    # いれば再探索(lost)に入って一意になるまで位置を保持する(誤った場所へ飛ぶより待つ)
+                    argmin = int(np.argmin(self.D))
+                    far = abs(float(self.ref_beats[argmin]) - st.position) >= self.distinct_beats
+                    if far:
+                        if self._far_since is None:
+                            self._far_since = now
+                            self._far_deficit = []
+                        self._far_deficit.append(float(win.min()) - gmin)
+                    else:
+                        self._far_since = None
+                    if gmin + self.jump_margin < float(win.min()):
+                        self._jump_frames += 1
+                    else:
+                        self._jump_frames = 0
+                    strong = self._jump_frames >= self.jump_dwell_frames
+                    long = (
+                        self._far_since is not None
+                        and now - self._far_since >= self.far_jump_sec
+                        and float(np.mean(self._far_deficit)) >= self.far_deficit_min
+                    )
+                    if strong or long:
+                        cand = np.nonzero(self.D <= gmin + self.near_eps)[0]
+                        clusters = self._clusters(cand)
+                        self._jump_frames = 0
+                        self._far_since = None
+                        if len(clusters) == 1:
+                            j = argmin
+                            point = True
+                        elif strong:
+                            st.lost = True
+                            st.candidates = len(clusters)
+                            st.confidence = self.confidence_floor
+                            st.frames += 1
+                            return FollowState(**st.__dict__)
+                if point:
+                    seg_lo = seg_hi = float(self.ref_beats[j])
+                else:
+                    # j を含む連続した同点区間の両端
+                    a = b = int(np.searchsorted(near, j))
+                    while a > 0 and near[a - 1] == near[a] - 1:
+                        a -= 1
+                    while b + 1 < len(near) and near[b + 1] == near[b] + 1:
+                        b += 1
+                    seg_lo, seg_hi = float(self.ref_beats[near[a]]), float(self.ref_beats[near[b]])
+                    # 同じ音が続くブロックの中では、上側の境界はオンセット項(次の音符の頭の三角パルス)による
+                    # もので chroma の証拠ではない。発火を取りこぼしても遅れが積み上がらないよう、上側は
+                    # ブロックの終わりまで広げてテンポで進ませる(下側は発火の報酬で押し上げられる)。
+                    seg_hi = max(seg_hi, float(self.ref_beats[self._block_end[near[b]]]))
+                    bs, be = int(self._block_start[near[a]]), int(self._block_end[near[a]])
+                    if self._head_cols[(self._head_cols >= bs) & (self._head_cols <= be)].size >= 2:
+                        # 同音連打ブロックの中: DTW の下端はオンセット項で決まっていて、実演奏では
+                        # 余分な発火(弓返し等)のたびに 1 音進んでしまうので信用しない。区間 = ブロック
+                        # 全体にして、位置はテンポと発火カウント(_snap_to_head)だけで動かす
+                        seg_lo = min(seg_lo, float(self.ref_beats[bs]))
+                raw = float(np.clip(predicted, seg_lo, seg_hi))
+                snapped = None
+                if self.fire_snap and fired_now and on >= self.snap_min_strength and not point and not st.lost:
+                    snapped = self._snap_to_head(predicted, now, st.tempo)
+                    if snapped is not None:
+                        self._last_snap_time = now
+                        raw = seg_lo = snapped
+                        point = True
+                        # DTW の累積コストにも反映: 数えた音符の頭を現在の最小に揃える。実演奏では発火が弱く
+                        # (強度 0.3 前後)三角ペナルティを打ち消せないため、放っておくと真の経路のコストが
+                        # 数フレームで数点上がり、別の場所の同じ音の長い音符(停滞が無料)へ窓ジャンプする
+                        jt = min(int(round(snapped / self.ref_step)), len(self.D) - 1)
+                        # 頭の列だけでなく三角パルスの後半(+2 列)までそろえ、次のフレームで無料の列へ抜けられるようにする
+                        self.D[jt:jt + 3] = np.minimum(self.D[jt:jt + 3], float(self.D.min()))
+                        j = jt
+                match = float(np.clip(c[j], 0.0, 1.0))
                 self._match_ema = 0.8 * self._match_ema + 0.2 * match
-                self._history.append((now, raw))
+                # テンポ: 同点区間の下端が上がった(次の音符に入った)時刻をイベントとして集め、回帰する。
+                # 区間内の位置は予測そのものなので、毎フレームの raw を回帰に使うと循環して情報がない
+                new_event = self._plateau_lo is None or seg_lo > self._plateau_lo + 1e-6 or point
+                if new_event:
+                    self._history.append((now, seg_lo))
+                self._plateau_lo = seg_lo
                 cutoff = now - self.tempo_window
                 while self._history and self._history[0][0] < cutoff:
                     self._history.pop(0)
-                # テンポ: 直近の観測の回帰
-                if len(self._history) >= int(self.fps * 0.8):
+                # テンポの更新はイベントが増えたときだけ(毎フレーム更新すると数点の回帰に即座に追従して
+                # 暴走する)。範囲も楽譜の 0.6〜1.5 倍に絞る(余分な発火で数え過ぎたときの歯止め)
+                if new_event and len(self._history) >= 4:
                     tt = np.array([h[0] for h in self._history])
                     bb = np.array([h[1] for h in self._history])
-                    if tt[-1] - tt[0] > 0.5:
+                    if tt[-1] - tt[0] > 1.0:
                         slope = float(np.polyfit(tt, bb, 1)[0])  # 拍/秒
-                        bpm = slope * 60.0
-                        lo, hi = self.score_bpm * 0.5, self.score_bpm * 2.0
-                        if lo <= bpm <= hi:
-                            st.tempo = 0.9 * st.tempo + 0.1 * bpm
+                        bpm = float(np.clip(slope * 60.0, self.score_bpm * self.tempo_range[0], self.score_bpm * self.tempo_range[1]))
+                        st.tempo = (1.0 - self.tempo_gain) * st.tempo + self.tempo_gain * bpm
                 # 位置: 予測に観測を混ぜる。大きくずれていたらスナップ
-                if abs(raw - predicted) > self.snap_beats:
+                if abs(raw - predicted) > self.snap_beats or snapped is not None:
                     st.position = raw
                 else:
                     st.position = predicted + self.gain * (raw - predicted)
                 st.raw_position = raw
                 # 一意性: 現在位置から distinct_beats 以上離れた列の最小コストとの差
                 far = np.abs(self.ref_beats - raw) >= self.distinct_beats
-                second = float(self.D[far].min()) if far.any() else self.uniqueness_scale
-                st.uniqueness = float(np.clip((second - float(self.D[j])) / self.uniqueness_scale, 0.0, 1.0))
+                near_u = float(self.Du[max(0, j - 4):j + 5].min())  # 現在位置の近傍(±1/4 拍)の最小
+                second = float(self.Du[far].min()) if far.any() else self.uniqueness_scale
+                st.uniqueness = float(np.clip((second - near_u) / self.uniqueness_scale, 0.0, 1.0))
                 if st.lost:
                     # 見失いからの復帰: 観測をそのまま位置にし、テンポは楽譜の値に戻す
                     st.position = raw
                     st.tempo = self.score_bpm
                     self._history = [(now, raw)]
+                    self._plateau_lo = raw
                     st.lost = False
                 self._silence_start = None
+                self._rest_end = None
                 st.in_rest = False
                 # 確信度 = 直近の一致度 × 「選んだ列が全体最小からどれだけ離れているか」
                 margin = float(self.D[j])  # D は min が 0 になるよう正規化済み
@@ -350,11 +504,21 @@ class OnlineFollower:
                 if self._silence_start is None:
                     self._silence_start = now
                 jp = min(int(round(predicted / self.ref_step)), len(self.ref) - 1)
-                st.in_rest = bool(self.ref_sil[jp])
+                if self.ref_sil[jp] and self._rest_end is None:
+                    # 休符に入った: 休符の終わり(次に音がある列)を覚え、位置はそこで止める。奏者が休符を
+                    # 長めに取っても次の音符へ勝手に進まず、休符の長さ + lost_after_sec まで待つ
+                    nxt = np.nonzero(~self.ref_sil[jp:])[0]
+                    self._rest_end = float(self.ref_beats[jp + int(nxt[0])]) if len(nxt) else self.length_beats
+                    self._rest_end_deadline = now + (self._rest_end - st.position) * 60.0 / max(st.tempo, 1e-6)
+                st.in_rest = self._rest_end is not None
                 silence = now - self._silence_start
                 if st.lost:
                     pass  # 位置を保持
-                elif st.in_rest or silence < self.lost_after_sec:
+                elif st.in_rest:
+                    st.position = min(predicted, self._rest_end - self.ref_step, self.length_beats)
+                    if now > self._rest_end_deadline + self.lost_after_sec:
+                        st.lost = True
+                elif silence < self.lost_after_sec:
                     st.position = min(predicted, self.length_beats)
                 else:
                     st.lost = True
