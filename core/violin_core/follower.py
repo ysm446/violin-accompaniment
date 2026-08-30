@@ -34,6 +34,7 @@ class FollowState:
     in_rest: bool = False  # 現在位置が楽譜上の休符
     uniqueness: float = 0.0  # 0..1。楽譜上の別の場所(2 拍以上離れた列)より現在位置がどれだけ良いか
     candidates: int = 0  # 再探索中の候補(離れた場所)の数。1 なら一意
+    alternates: list = None  # 副仮説 [{position, lead}](主仮説より良い状態が続いている秒数つき)
     frames: int = 0
 
     def to_dict(self) -> dict:
@@ -47,6 +48,7 @@ class FollowState:
             "in_rest": self.in_rest,
             "uniqueness": round(self.uniqueness, 2),
             "candidates": self.candidates,
+            "alternates": [{"position": round(a["pos"], 2), "lead": round(a["lead"], 2)} for a in (self.alternates or [])],
         }
 
 
@@ -78,8 +80,11 @@ class OnlineFollower:
         near_eps: float = 0.05,
         jump_margin: float = 6.0,
         jump_dwell_frames: int = 6,
-        far_jump_sec: float = 1.0,
-        far_deficit_min: float = 2.0,
+        alt_margin: float = 4.0,
+        alt_switch_near_sec: float = 1.5,
+        alt_switch_far_sec: float = 4.0,
+        alt_near_beats: float = 8.0,
+        alt_max: int = 4,
         lost_after_sec: float = 1.0,
         lost_listen_sec: float = 1.0,
         lost_max_listen_sec: float = 2.5,
@@ -152,8 +157,11 @@ class OnlineFollower:
         self.near_eps = near_eps
         self.jump_margin = jump_margin
         self.jump_dwell_frames = jump_dwell_frames
-        self.far_jump_sec = far_jump_sec
-        self.far_deficit_min = far_deficit_min
+        self.alt_margin = alt_margin
+        self.alt_switch_near_sec = alt_switch_near_sec
+        self.alt_switch_far_sec = alt_switch_far_sec
+        self.alt_near_beats = alt_near_beats
+        self.alt_max = alt_max
         self.lost_after_sec = lost_after_sec
         self.lost_listen_sec = lost_listen_sec
         self.lost_max_listen_sec = lost_max_listen_sec
@@ -192,9 +200,8 @@ class OnlineFollower:
             self._last_snap_time: float | None = None
             self._rest_end: float | None = None  # 無音が楽譜の休符にかかっているとき、その休符の終わり(拍)
             self._jump_frames = 0
-            self._far_since: float | None = None
             self._unique_frames = 0
-            self._far_deficit: list[float] = []
+            self._alts: list[dict] = []  # 副仮説 {pos, lead, since}
             self._silence_start: float | None = None
             self._last_fired = 0.0
             self._active_frames = 0
@@ -385,46 +392,53 @@ class OnlineFollower:
                     self._jump_frames = 0
                     point = True
                 else:
-                    # 窓外に良い列がある(弾き直し・誤追従)ときの再アンカー。飛ぶ条件は 2 つ:
-                    #  strong: 窓内の最小が全体最小より jump_margin 以上悪い状態が jump_dwell_frames 続いた
-                    #  long:   全体最小の列が現在位置から離れた場所にあり続けて far_jump_sec 経った
-                    #          (遠方の窓に同じ音名の別オクターブなど偶然コストの低い列が混じると strong に
-                    #          ならないまま誤った場所に留まるため)
-                    # どちらの場合も、候補が楽譜上の 1 箇所に絞れていればそこへ飛び、複数の場所に分かれて
-                    # いれば再探索(lost)に入って一意になるまで位置を保持する(誤った場所へ飛ぶより待つ)
-                    argmin = int(np.argmin(self.D))
-                    far = abs(float(self.ref_beats[argmin]) - st.position) >= self.distinct_beats
-                    if far:
-                        if self._far_since is None:
-                            self._far_since = now
-                            self._far_deficit = []
-                        self._far_deficit.append(float(win.min()) - gmin)
-                    else:
-                        self._far_since = None
-                    if gmin + self.jump_margin < float(win.min()):
-                        self._jump_frames += 1
-                    else:
-                        self._jump_frames = 0
-                    strong = self._jump_frames >= self.jump_dwell_frames
-                    long = (
-                        self._far_since is not None
-                        and now - self._far_since >= self.far_jump_sec
-                        and float(np.mean(self._far_deficit)) >= self.far_deficit_min
-                    )
-                    if strong or long:
-                        cand = np.nonzero(self.D <= gmin + self.near_eps)[0]
-                        clusters = self._clusters(cand)
-                        self._jump_frames = 0
-                        self._far_since = None
-                        if len(clusters) == 1:
-                            j = argmin
+                    # 複数仮説: 主仮説(いま追跡している位置)のほかに、累積コストが主仮説の窓より
+                    # alt_margin 以上良い場所を副仮説として並走させ、「主仮説より良い状態が続いた時間
+                    # (lead)」を数える。乗り換えは lead が閾値(近くなら alt_switch_near_sec、遠くなら
+                    # alt_switch_far_sec)を超えたときだけ。瞬間的な差(ミス・過渡・同じ音名の別の箇所)
+                    # では飛ばず、窓が悪いのに副仮説が育っていない間は位置を保持する(確信度が下がるので
+                    # 伴奏側が止まる)。弾き直しは近くが多いので、近い副仮説ほど早く乗り換える
+                    wmin = float(win.min())
+                    cand = np.nonzero(self.D <= wmin - self.alt_margin)[0]
+                    clusters = self._clusters(cand) if len(cand) else []
+                    seen = []
+                    for a, b in clusters[: self.alt_max * 2]:
+                        seg = self.D[a:b + 1]
+                        col = a + int(np.argmin(seg))
+                        beat = float(self.ref_beats[col])
+                        if abs(beat - st.position) < self.distinct_beats:
+                            continue
+                        match_alt = None
+                        for alt in self._alts:
+                            if abs(alt["pos"] - beat) < 3.0 + abs(st.tempo) / 60.0 * 0.5 and alt not in seen:
+                                match_alt = alt
+                                break
+                        if match_alt is None:
+                            match_alt = {"pos": beat, "lead": 0.0}
+                            self._alts.append(match_alt)
+                        match_alt["pos"] = beat
+                        match_alt["lead"] += dt  # 主仮説より良い間は増える
+                        match_alt["deficit"] = wmin - float(seg.min())
+                        seen.append(match_alt)
+                    for alt in self._alts:
+                        if alt not in seen:
+                            alt["lead"] -= dt  # 良くない間は減り、0 を切ったら消える(一瞬の揺れでは消えない)
+                            alt["deficit"] = 0.0
+                    self._alts = sorted([a for a in self._alts if a["lead"] > 0], key=lambda a: -a["lead"])[: self.alt_max]
+                    st.candidates = len(self._alts) + 1 if self._alts else 0
+                    if self._alts:
+                        # lead が閾値(近い候補は短め)を超えた副仮説のうち、コストが最良のものと同点の候補が
+                        # 複数あれば(同じ楽句のコピー)、現在位置に近いほうを採る
+                        def need_of(a):
+                            return self.alt_switch_near_sec if abs(a["pos"] - st.position) <= self.alt_near_beats else self.alt_switch_far_sec
+                        ready = [a for a in self._alts if a in seen and a["lead"] >= need_of(a)]
+                        if ready:
+                            top = max(a["deficit"] for a in ready)
+                            tied = [a for a in ready if a["deficit"] >= top - self.alt_margin]
+                            best = min(tied, key=lambda a: abs(a["pos"] - st.position))
+                            j = min(int(round(best["pos"] / self.ref_step)), len(self.D) - 1)
                             point = True
-                        elif strong:
-                            st.lost = True
-                            st.candidates = len(clusters)
-                            st.confidence = self.confidence_floor
-                            st.frames += 1
-                            return FollowState(**st.__dict__)
+                            self._alts = []
                 if point:
                     seg_lo = seg_hi = float(self.ref_beats[j])
                 else:
@@ -491,6 +505,7 @@ class OnlineFollower:
                 near_u = float(self.Du[max(0, j - 4):j + 5].min())  # 現在位置の近傍(±1/4 拍)の最小
                 second = float(self.Du[far].min()) if far.any() else self.uniqueness_scale
                 st.uniqueness = float(np.clip((second - near_u) / self.uniqueness_scale, 0.0, 1.0))
+                st.alternates = [{"pos": a["pos"], "lead": a["lead"]} for a in self._alts]
                 if st.lost:
                     # 見失いからの復帰: 観測をそのまま位置にし、テンポは楽譜の値に戻す
                     st.position = raw
