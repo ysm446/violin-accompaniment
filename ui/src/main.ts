@@ -15,6 +15,7 @@ interface State {
   length: number;
   song: string | null;
   metronome?: boolean;
+  score_bpm?: number;
   volume?: number;
   metronome_volume?: number;
   audio?: AudioStatus;
@@ -226,6 +227,10 @@ function tick(): void {
       followBtn.textContent = enabled ? "◎ 追従 ON" : "◎ 追従 OFF";
       followBtn.classList.toggle("on", enabled);
       playhead.classList.toggle("follow", enabled);
+    }
+    if (latest.score_bpm) {
+      const v = parseFloat(rateInput.value);
+      rateValue.textContent = `${v.toFixed(2)} (♩=${Math.round(v * latest.score_bpm)})`;
     }
     const metro = !!latest.metronome;
     if (metro !== metronomeOn) {

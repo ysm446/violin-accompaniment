@@ -295,6 +295,7 @@ class StateServer:
             "type": "state",
             "position": p.position,
             "tempo": p.tempo,
+            "score_bpm": float(self.player.score.score_bpm),
             "confidence": 1.0,  # Phase 0: 固定テンポ再生なので常に確定
             "playing": p.playing,
             "rate": p.rate,
