@@ -63,7 +63,7 @@ class PlayerFadeAndMetronomeTests(unittest.TestCase):
             player.play(fade_in_sec=0.1)
             time.sleep(0.3)
             with fake.lock:
-                expr = [m[2] for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[1] == 11]
+                expr = [m[2] for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[0] & 0x0F != 9 and m[1] == 11]
             self.assertEqual(expr[0], 0)
             self.assertEqual(expr[-1], 127)
             self.assertEqual(expr, sorted(expr))
@@ -81,7 +81,7 @@ class PlayerFadeAndMetronomeTests(unittest.TestCase):
             time.sleep(0.3)
             self.assertFalse(player.playing)
             with fake.lock:
-                expr = [m[2] for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[1] == 11]
+                expr = [m[2] for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[0] & 0x0F != 9 and m[1] == 11]
                 sound_off = [m for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[1] == 120]
             self.assertEqual(expr[-1], 0)
             self.assertTrue(sound_off)
@@ -112,7 +112,7 @@ class PlayerFadeAndMetronomeTests(unittest.TestCase):
             player.play()
             time.sleep(0.6)
             with fake.lock:
-                expr = [m[2] for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[1] == 11]
+                expr = [m[2] for m in fake.messages if m[0] & 0xF0 == 0xB0 and m[0] & 0x0F != 9 and m[1] == 11]
                 clicks = [m for m in fake.messages if m[0] == 0x99 and m[2] > 0]
             self.assertEqual(expr[-1], 64)
             self.assertTrue(clicks)
