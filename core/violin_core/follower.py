@@ -85,6 +85,7 @@ class OnlineFollower:
         alt_switch_far_sec: float = 4.0,
         alt_near_beats: float = 8.0,
         alt_max: int = 4,
+        alt_trust_sec: float = 5.0,
         lost_after_sec: float = 1.0,
         lost_listen_sec: float = 1.0,
         lost_max_listen_sec: float = 2.5,
@@ -162,6 +163,7 @@ class OnlineFollower:
         self.alt_switch_far_sec = alt_switch_far_sec
         self.alt_near_beats = alt_near_beats
         self.alt_max = alt_max
+        self.alt_trust_sec = alt_trust_sec
         self.lost_after_sec = lost_after_sec
         self.lost_listen_sec = lost_listen_sec
         self.lost_max_listen_sec = lost_max_listen_sec
@@ -201,7 +203,8 @@ class OnlineFollower:
             self._rest_end: float | None = None  # 無音が楽譜の休符にかかっているとき、その休符の終わり(拍)
             self._jump_frames = 0
             self._unique_frames = 0
-            self._alts: list[dict] = []  # 副仮説 {pos, lead, since}
+            self._alts: list[dict] = []  # 副仮説 {pos, lead, deficit}
+            self._good_sec = 0.0  # 主仮説の実績(窓が全体最小に近かった累積秒)
             self._silence_start: float | None = None
             self._last_fired = 0.0
             self._active_frames = 0
@@ -399,6 +402,8 @@ class OnlineFollower:
                     # では飛ばず、窓が悪いのに副仮説が育っていない間は位置を保持する(確信度が下がるので
                     # 伴奏側が止まる)。弾き直しは近くが多いので、近い副仮説ほど早く乗り換える
                     wmin = float(win.min())
+                    if wmin - gmin < self.alt_margin:
+                        self._good_sec += dt
                     cand = np.nonzero(self.D <= wmin - self.alt_margin)[0]
                     clusters = self._clusters(cand) if len(cand) else []
                     seen = []
@@ -422,15 +427,20 @@ class OnlineFollower:
                         seen.append(match_alt)
                     for alt in self._alts:
                         if alt not in seen:
-                            alt["lead"] -= dt  # 良くない間は減り、0 を切ったら消える(一瞬の揺れでは消えない)
+                            alt["lead"] -= 0.5 * dt  # 良くない間はゆっくり減り、0 を切ったら消える(一瞬の揺れでは消えない)
                             alt["deficit"] = 0.0
                     self._alts = sorted([a for a in self._alts if a["lead"] > 0], key=lambda a: -a["lead"])[: self.alt_max]
                     st.candidates = len(self._alts) + 1 if self._alts else 0
                     if self._alts:
                         # lead が閾値(近い候補は短め)を超えた副仮説のうち、コストが最良のものと同点の候補が
                         # 複数あれば(同じ楽句のコピー)、現在位置に近いほうを採る
+                        # 主仮説に実績(窓が良かった累積秒)が無いうち(曲頭・乗り換え直後)は、遠い候補にも
+                        # 早く乗り換える。実績があれば、ミス中に一時的に負けても遠い候補には 4 秒待つ
+                        untrusted = self._good_sec < self.alt_trust_sec
+
                         def need_of(a):
-                            return self.alt_switch_near_sec if abs(a["pos"] - st.position) <= self.alt_near_beats else self.alt_switch_far_sec
+                            near = abs(a["pos"] - st.position) <= self.alt_near_beats
+                            return self.alt_switch_near_sec if (near or untrusted) else self.alt_switch_far_sec
                         ready = [a for a in self._alts if a in seen and a["lead"] >= need_of(a)]
                         if ready:
                             top = max(a["deficit"] for a in ready)
@@ -439,6 +449,7 @@ class OnlineFollower:
                             j = min(int(round(best["pos"] / self.ref_step)), len(self.D) - 1)
                             point = True
                             self._alts = []
+                            self._good_sec = 0.0
                 if point:
                     seg_lo = seg_hi = float(self.ref_beats[j])
                 else:
@@ -549,6 +560,8 @@ class OnlineFollower:
                     st.lost = True
                     self.D[:] = 0.0
                     self.Du[:] = 0.0
+                    self._good_sec = 0.0
+                    self._alts = []
                 st.confidence = max(self.confidence_floor, st.confidence * 0.97)
                 st.active = False
             st.frames += 1
