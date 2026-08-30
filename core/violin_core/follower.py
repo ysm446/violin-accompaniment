@@ -103,6 +103,7 @@ class OnlineFollower:
     ):
         self.notes = notes
         self.score_bpm = score_bpm
+        self.base_bpm = score_bpm  # 奏者が弾くと想定するテンポ(初期値と推定範囲の中心)。UI の目標テンポで変わる
         self.fps = fps
         self.ref_step = ref_step
         length = max((n.beat + n.duration for n in notes), default=0.0)
@@ -183,11 +184,21 @@ class OnlineFollower:
 
     # ---- 公開 ----
 
+    def set_base_tempo(self, bpm: float) -> None:
+        """想定テンポを変える(追従 ON 中のレートスライダー)。推定中のテンポも範囲内に収める。"""
+        with self._lock:
+            self.base_bpm = max(10.0, float(bpm))
+            lo, hi = self.base_bpm * self.tempo_range[0], self.base_bpm * self.tempo_range[1]
+            if not self.state.active or self.state.lost:
+                self.state.tempo = self.base_bpm
+            else:
+                self.state.tempo = float(np.clip(self.state.tempo, lo, hi))
+
     def reset(self, position: float = 0.0) -> None:
         with self._lock:
             self.D = np.zeros(len(self.ref), dtype=np.float32)
             self.Du = np.zeros(len(self.ref), dtype=np.float32)
-            self.state = FollowState(position=position, tempo=self.score_bpm, raw_position=position)
+            self.state = FollowState(position=position, tempo=self.base_bpm, raw_position=position)
             self._history: list[tuple[float, float]] = []  # (時刻, 拍): 同点区間の下端が上がったイベント
             self._match_ema = 1.0
             self._last_time: float | None = None
@@ -503,7 +514,7 @@ class OnlineFollower:
                     bb = np.array([h[1] for h in self._history])
                     if tt[-1] - tt[0] > 1.0:
                         slope = float(np.polyfit(tt, bb, 1)[0])  # 拍/秒
-                        bpm = float(np.clip(slope * 60.0, self.score_bpm * self.tempo_range[0], self.score_bpm * self.tempo_range[1]))
+                        bpm = float(np.clip(slope * 60.0, self.base_bpm * self.tempo_range[0], self.base_bpm * self.tempo_range[1]))
                         st.tempo = (1.0 - self.tempo_gain) * st.tempo + self.tempo_gain * bpm
                 # 位置: 予測に観測を混ぜる。大きくずれていたらスナップ
                 if abs(raw - predicted) > self.snap_beats or snapped is not None:
@@ -520,7 +531,7 @@ class OnlineFollower:
                 if st.lost:
                     # 見失いからの復帰: 観測をそのまま位置にし、テンポは楽譜の値に戻す
                     st.position = raw
-                    st.tempo = self.score_bpm
+                    st.tempo = self.base_bpm
                     self._history = [(now, raw)]
                     self._plateau_lo = raw
                     st.lost = False

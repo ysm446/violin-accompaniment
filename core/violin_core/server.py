@@ -74,6 +74,7 @@ class StateServer:
         self.follower: OnlineFollower | None = None
         self.follow_enabled = False
         self._follow_rate = 1.0
+        self._base_rate = 1.0  # 追従 ON 中の目標テンポ(楽譜テンポ比)
         # 保守的な同期のための状態(フレーム数は約 94 fps 基準)
         self._stable_frames = 0  # 確信度の高い有音フレームが連続した数(開始待ち)
         self._disagree_frames = 0  # 追従位置と再生位置が大きくずれたフレームの連続数
@@ -87,8 +88,8 @@ class StateServer:
             "seek_threshold_beats": 1.0,
             "confidence_min": 0.5,
             "rate_gain": 0.15,
-            "rate_min": 0.8,
-            "rate_max": 1.25,
+            "rate_min": 0.5,
+            "rate_max": 1.6,
             "silence_stop_sec": 1.0,  # 休符でない無音がこの時間続いたら伴奏を止める
             "fade_in_sec": 1.0,  # 追従モードで伴奏を始めるときのフェードイン
             "fade_out_sec": 0.3,  # 追従モードで伴奏を止めるときのフェードアウト
@@ -117,6 +118,7 @@ class StateServer:
         notes = load_part_notes(song.midi)
         fps = self.analysis.sr / self.analysis.hop
         self.follower = OnlineFollower(notes, self.player.score.score_bpm, fps)
+        self.follower.set_base_tempo(self.player.score.score_bpm * getattr(self, '_base_rate', 1.0))
 
     def _rest_remaining_sec(self, position: float, p: MidiPlayer) -> float:
         """追従対象パートの現在の休符が終わるまでの秒数(楽譜テンポ換算)。休符でなければ 0。"""
@@ -176,9 +178,11 @@ class StateServer:
             # 弾き始めてしばらく安定してから伴奏を出す
             if self._stable_frames >= cfg["start_wait_sec"] * fps:
                 p.seek(st.position)
+                # 開始時のレートは推定テンポから(ゆっくり弾いているなら最初からゆっくり入る)
+                self._follow_rate = float(np.clip(st.tempo / max(p.score.score_bpm, 1e-6), cfg["rate_min"], cfg["rate_max"]))
+                p.set_rate(self._follow_rate)
                 p.play(fade_in_sec=cfg["fade_in_sec"])
                 self._last_seek_time = now
-                self._follow_rate = 1.0
                 self.follow_mode = "playing"
             return
         self.follow_mode = "playing"
@@ -355,8 +359,14 @@ class StateServer:
             if not self.follow_enabled:
                 p.seek(float(msg.get("beat", 0.0)))
         elif cmd == "rate":
-            if not self.follow_enabled:
-                p.set_rate(float(msg.get("value", 1.0)))
+            value = float(msg.get("value", 1.0))
+            if self.follow_enabled:
+                # 追従 ON 中は「目標テンポ」: 追従器の初期テンポと推定範囲の中心にする
+                self._base_rate = value
+                if self.follower is not None:
+                    self.follower.set_base_tempo(p.score.score_bpm * value)
+            else:
+                p.set_rate(value)
         elif cmd == "load":
             self.load_song(str(msg.get("song", "")))
         elif cmd == "input":
@@ -373,6 +383,10 @@ class StateServer:
             self._silence_since = None
             self.follow_mode = "waiting" if self.follow_enabled else "off"
             p.stop()
+            if self.follow_enabled:
+                self._base_rate = float(p.rate)  # 追従に入る時点のレートを目標テンポとして引き継ぐ
+                if self.follower is not None:
+                    self.follower.set_base_tempo(p.score.score_bpm * self._base_rate)
             p.set_rate(1.0)
             self._follow_rate = 1.0
         elif cmd == "follow_reset":
