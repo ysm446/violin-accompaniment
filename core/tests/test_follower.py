@@ -22,10 +22,11 @@ SR, HOP, WIN = 48000, 512, 4096
 FPS = SR / HOP
 
 
-def run_follower(notes, audio, **kw):
+def run_follower(notes, audio, start=0.0, **kw):
     F = extract_offline(audio, SR, WIN, HOP)
     T = (np.arange(len(F["flux"])) + 1) / FPS
     f = OnlineFollower(notes, 70.0, FPS, **kw)
+    f.reset(start)
     pos = np.array([
         f.process(F["chroma"][i], float(F["flux"][i]), float(F["level_db"][i]), t=T[i]).position for i in range(len(T))
     ])
@@ -63,13 +64,13 @@ class FollowerRegressionTest(unittest.TestCase):
         sub2 = [n for n in notes if 40 <= n.beat < 56]
         a2, t2 = render_performance(sub2, SR, bpm_curve=lambda b: 75.0, lead_silence=1.5)
         audio = np.concatenate([a1[: int(t_cut * SR)], a2])
-        T, pos, level = run_follower(notes, audio)
+        T, pos, level = run_follower(notes, audio, start=32.0)  # 譜面クリックで拍 32 に置いてから弾く
         tb1 = np.array([n.beat for n in sub]); tt1 = np.array([x.onset for x in t1]); m1 = tt1 < t_cut
         tb2 = np.array([n.beat for n in sub2]); tt2 = np.array([x.onset for x in t2]) + t_cut
         true = np.where(T < t_cut, np.interp(T, tt1[m1], tb1[m1]), np.interp(T, tt2, tb2))
         active = (level > -45) & (T >= tt1[0]) & (T <= tt2[-1])
         err_ms = np.abs(pos - true) * 60.0 / 75.0 * 1000
-        # 途中(拍 32)からの開始
+        # 拍 32 に置いてからの開始
         self.assertLess(np.median(err_ms[active & (T < t_cut) & (T > 3.0)]), 150)
         # 1.5 秒の無音のあと拍 40 から弾き直し: 拍 40 の楽句は拍 316 にも同一なので、再探索は
         # lost_max_listen_sec(2.5 秒)まで聞いてから直前の位置に近い候補を採る。3 秒以内に復帰し、その後は追従する

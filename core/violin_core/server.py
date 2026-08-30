@@ -93,6 +93,7 @@ class StateServer:
             "silence_stop_sec": 1.0,  # 休符でない無音がこの時間続いたら伴奏を止める
             "fade_in_sec": 1.0,  # 追従モードで伴奏を始めるときのフェードイン
             "tempo_wait_sec": 2.0,  # テンポの実測が立つまで伴奏の開始をこの時間まで待つ
+            "local_beats": 16.0,  # 通しモード: 追従器が探す範囲(現在位置 ±拍)。None なら楽譜全体(どこからでも)
             "fade_out_sec": 0.3,  # 追従モードで伴奏を止めるときのフェードアウト
             "rest_grace_sec": 1.0,  # 休符中は休符の長さ + この時間まで待つ
         }
@@ -118,7 +119,7 @@ class StateServer:
             return
         notes = load_part_notes(song.midi)
         fps = self.analysis.sr / self.analysis.hop
-        self.follower = OnlineFollower(notes, self.player.score.score_bpm, fps)
+        self.follower = OnlineFollower(notes, self.player.score.score_bpm, fps, local_beats=self.follow_settings.get("local_beats"))
         self.follower.set_base_tempo(self.player.score.score_bpm * getattr(self, '_base_rate', 1.0))
 
     def _rest_remaining_sec(self, position: float, p: MidiPlayer) -> float:
@@ -363,8 +364,17 @@ class StateServer:
             p.stop()
             p.seek(0.0)
         elif cmd == "seek":
-            if not self.follow_enabled:
-                p.seek(float(msg.get("beat", 0.0)))
+            beat = float(msg.get("beat", 0.0))
+            if self.follow_enabled:
+                # 追従 ON 中の譜面クリック = ここから弾く(追従器の位置を置き、伴奏は確実になってから入る)
+                if self.follower is not None:
+                    self.follower.reset(beat)
+                p.stop()
+                p.seek(beat)
+                self._stable_frames = 0
+                self.follow_mode = "waiting"
+            else:
+                p.seek(beat)
         elif cmd == "rate":
             value = float(msg.get("value", 1.0))
             if self.follow_enabled:

@@ -88,6 +88,7 @@ class OnlineFollower:
         alt_near_beats: float = 8.0,
         alt_max: int = 4,
         alt_trust_sec: float = 5.0,
+        local_beats: float | None = 16.0,
         lost_after_sec: float = 1.0,
         lost_listen_sec: float = 1.0,
         lost_max_listen_sec: float = 2.5,
@@ -167,6 +168,9 @@ class OnlineFollower:
         self.alt_near_beats = alt_near_beats
         self.alt_max = alt_max
         self.alt_trust_sec = alt_trust_sec
+        # 通しモード: 再スタート・副仮説・再探索を現在位置の ±local_beats に限定する(None なら楽譜全体)。
+        # 「通しで弾く(飛ばない)」前提なら、遠くの似た楽句に乗り換える失敗が原理的に消える
+        self.local_beats = local_beats
         self.lost_after_sec = lost_after_sec
         self.lost_listen_sec = lost_listen_sec
         self.lost_max_listen_sec = lost_max_listen_sec
@@ -183,6 +187,21 @@ class OnlineFollower:
         self.snap_beats = snap_beats
         self._lock = threading.Lock()
         self.reset()
+
+    def _local_mask(self, position: float) -> np.ndarray:
+        if self.local_beats is None:
+            return np.ones(len(self.ref), dtype=bool)
+        return np.abs(self.ref_beats - position) <= self.local_beats
+
+    def _restart_row(self, position: float) -> np.ndarray | float | None:
+        """再スタート項: 列ごとの「新しいパスを始めるコスト」。通しモードでは近く以外は不可(inf)。"""
+        if self.restart_penalty <= 0:
+            return None
+        if self.local_beats is None:
+            return self.restart_penalty
+        row = np.full(len(self.ref), np.inf, dtype=np.float32)
+        row[self._local_mask(position)] = self.restart_penalty
+        return row
 
     # ---- 公開 ----
 
@@ -348,8 +367,9 @@ class OnlineFollower:
                 u1[1:] += head_cost_raw[1:]
                 u2[2:] += head_cost_raw[2:] + head_cost_raw[1:-1]  # 早送りで飛び越す頭の分も払う
             bu = np.minimum(pu, np.minimum(u1, u2))
-            if self.restart_penalty > 0:
-                bu = np.minimum(bu, self.restart_penalty)
+            restart = self._restart_row(st.position)
+            if restart is not None:
+                bu = np.minimum(bu, restart)
             self.Du = c_raw + bu
             self.Du -= self.Du.min()
             # --- DTW 行再帰: 停滞 / 対角 / 早送り ---
@@ -364,9 +384,9 @@ class OnlineFollower:
                 cand1[1:] += head_cost[1:]
                 cand2[2:] += head_cost[2:] + head_cost[1:-1]
             best_prev = np.minimum(prev, np.minimum(cand1, cand2))
-            if self.restart_penalty > 0:
-                # どの列からでも新しいパスを始められる(弾き直し・途中からの開始への耐性)
-                best_prev = np.minimum(best_prev, self.restart_penalty)
+            if restart is not None:
+                # 新しいパスを始められる(弾き直し・途中からの開始への耐性)。通しモードでは近くだけ
+                best_prev = np.minimum(best_prev, restart)
             self.D = c + best_prev
             self.D -= self.D.min()  # 数値の発散防止
             # --- 予測と観測 ---
@@ -391,7 +411,9 @@ class OnlineFollower:
                     # lost_listen_sec 聞いてから楽譜全体の最小コスト列を採る。ただし候補が楽譜上の複数の
                     # 離れた場所に同点で残っている間は決めない(誤った場所で伴奏を鳴らすより待つ)。
                     self._jump_frames += 1
-                    cand = np.nonzero(self.D <= gmin + self.near_eps)[0]
+                    if self.local_beats is not None:
+                        gmin = float(self.D[self._local_mask(st.position)].min())
+                    cand = np.nonzero((self.D <= gmin + self.near_eps) & self._local_mask(st.position))[0]
                     clusters = self._clusters(cand)
                     st.candidates = len(clusters)
                     listened = self._jump_frames / self.fps
@@ -417,7 +439,7 @@ class OnlineFollower:
                     wmin = float(win.min())
                     if wmin - gmin < self.alt_margin:
                         self._good_sec += dt
-                    cand = np.nonzero(self.D <= wmin - self.alt_margin)[0]
+                    cand = np.nonzero((self.D <= wmin - self.alt_margin) & self._local_mask(st.position))[0]
                     clusters = self._clusters(cand) if len(cand) else []
                     seen = []
                     for a, b in clusters[: self.alt_max * 2]:

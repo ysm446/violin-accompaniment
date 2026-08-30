@@ -5,7 +5,7 @@
   cd core && .venv/Scripts/python tools/eval_follower.py --trace2 [gain] / --trace3   途中開始+弾き直し / 実演奏のトレース
 
 シナリオ: (1) 合成演奏・テンポ 65〜95 で変動(拍 50.5〜63.75 の B5 ×21 の同音連打を含む。in-run はその区間、
-out はそれ以外)、(2) 合成・拍 32 から開始して 48 で 40 に弾き直し、(3) 実演奏の記録(オフライン整列を正解とする。
+out はそれ以外)、(2) 合成・拍 32 に置いて(譜面クリック相当)開始し、48 で 40 に弾き直し、(3) 実演奏の記録(オフライン整列を正解とする。
 連打区間ではオフライン整列自体が不確かなので目安)。誤差は真のテンポで ms に換算。
 """
 import sys, itertools
@@ -21,8 +21,8 @@ sr=48000; hop=512; fps=sr/hop
 notes=load_part_notes(ROOT / 'scores/vivaldi_spring_1/score.mid')
 def feats_of(audio):
     F=extract_offline(audio, sr, 4096, hop); T=(np.arange(len(F['flux']))+1)/fps; return F,T
-def run(F,T,**kw):
-    f=OnlineFollower(notes, 70.0, fps, **kw); pos=[]; raw=[]; conf=[]
+def run(F,T,start=0.0,**kw):
+    f=OnlineFollower(notes, 70.0, fps, **kw); f.reset(start); pos=[]; raw=[]; conf=[]
     for i in range(len(T)):
         st=f.process(F['chroma'][i], float(F['flux'][i]), float(F['level_db'][i]), t=T[i]); pos.append(st.position); raw.append(st.raw_position); conf.append(st.confidence)
     return np.array(pos), np.array(raw), np.array(conf)
@@ -49,7 +49,7 @@ r=analyze_session(sess, Path(ROOT / 'scores/vivaldi_spring_1/score.mid')); pb=np
 F3={'chroma':f['chroma'],'flux':f['flux'],'level_db':f['level_db']}; A3=(f['level_db']>-45)&(T3>2)&(T3<50)
 def evaluate(**kw):
     p1,_,_=run(F1,T1,**kw); m1_=metrics(p1,TR1,A1,B1); mi=metrics(p1,TR1,A1&IN1,B1); mo=metrics(p1,TR1,A1&~IN1,B1)
-    p2,_,_=run(F2,T2,**kw); mb=metrics(p2,TR2,A2&(T2<t_cut),75.0); ma=metrics(p2,TR2,A2&(T2>t_cut+2.0),75.0)
+    p2,_,_=run(F2,T2,start=32.0,**kw); mb=metrics(p2,TR2,A2&(T2<t_cut),75.0); ma=metrics(p2,TR2,A2&(T2>t_cut+2.0),75.0)
     e=np.abs(p2-TR2); idx=np.nonzero((T2>t_cut+1.5)&(e<0.5)&A2)[0]; re=(T2[idx[0]]-t_cut-1.5) if len(idx) else -1
     p3,_,_=run(F3,T3,**kw); m3=metrics(p3,TR3,A3,82.0)
     return m1_, mb, ma, re, m3, mi, mo
