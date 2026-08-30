@@ -214,7 +214,7 @@ function sendVolumes(): void {
   send({ cmd: "metronome_volume", value: parseFloat(metronomeVolumeInput.value) });
 }
 volumeInput.value = String(recallNumber(VOLUME_KEY, 1));
-metronomeVolumeInput.value = String(recallNumber(METRONOME_VOLUME_KEY, 0.8));
+metronomeVolumeInput.value = String(recallNumber(METRONOME_VOLUME_KEY, 1));
 
 function tick(): void {
   if (latest) audioPanel.update(latest.audio);

@@ -98,7 +98,7 @@ class PlayerFadeAndMetronomeTests(unittest.TestCase):
             time.sleep(1.8)
             with fake.lock:
                 clicks = [m for m in fake.messages if m[0] == 0x99 and m[2] > 0]
-            self.assertEqual([m[1] for m in clicks], [76, 77, 77])
+            self.assertEqual([m[1] for m in clicks], [75, 76, 76])
         finally:
             player.close()
 

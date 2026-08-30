@@ -18,8 +18,9 @@ ALL_NOTES_OFF = 123
 ALL_SOUND_OFF = 120
 EXPRESSION = 11  # フェードに使う(楽譜の MIDI は CC7 を使い CC11 は使わないので上書きされない)
 CLICK_CHANNEL = 9  # GM のパーカッション
-CLICK_NOTE_ACCENT = 76  # High Wood Block
-CLICK_NOTE = 77  # Low Wood Block
+CLICK_NOTE_ACCENT = 75  # Claves(鋭く通る)
+CLICK_NOTE = 76  # High Wood Block
+CHANNEL_VOLUME = 7
 
 
 class MidiPlayer:
@@ -58,12 +59,16 @@ class MidiPlayer:
         self._volume = 1.0  # 伴奏の音量 0..1(フェードの gain と掛け合わせて CC11 に送る)
         # メトロノーム: 拍ごとにパーカッションを鳴らす(小節頭はアクセント)
         self.metronome = False
-        self.metronome_volume = 0.8  # クリックの音量 0..1(ベロシティに掛ける)
+        self.metronome_volume = 1.0  # クリックの音量 0..1(ベロシティに掛ける)
         self._clicks = score.clicks()
         self._next_click = 0
         self._stop_flag = threading.Event()
         self._thread = threading.Thread(target=self._run, name="midi-player", daemon=True)
         self._thread.start()
+        # メトロノーム用チャンネルの音量を最大にしておく(GS の既定は 100)
+        with self._send_lock:
+            self._out.send_message([0xB0 | CLICK_CHANNEL, CHANNEL_VOLUME, 127])
+            self._out.send_message([0xB0 | CLICK_CHANNEL, EXPRESSION, 127])
 
     # ---- 公開 API(スレッドセーフ) ----
 
@@ -135,7 +140,8 @@ class MidiPlayer:
         self._last_sent_expr = value
         with self._send_lock:
             for ch in range(16):
-                self._out.send_message([0xB0 | ch, EXPRESSION, value])
+                if ch != CLICK_CHANNEL:  # メトロノームは伴奏の音量・フェードの影響を受けない
+                    self._out.send_message([0xB0 | ch, EXPRESSION, value])
 
     def seek(self, beat: float) -> None:
         beat = max(0.0, min(beat, self.score.length_beats))
